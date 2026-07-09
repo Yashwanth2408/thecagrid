@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 7 — backend-only retest of Phase 3 FIX 2 (SOURCES_RE widening) plus regressions for FIX 1/3/4 and citation self-test log. Result: 8/9 targeted tests PASS. The SOURCES_RE terminator patch (\\Z instead of (?:\\n\\n|\\Z)) IS in place at server.py:1024 and DOES fix the previous 'first-blank-line truncation' problem — the full SOURCES block is now captured. However, the FIX 2 live end-to-end test STILL FAILS with a NEW root cause: on this run Claude emitted the SOURCES block using a DIFFERENT natural format where the label and value live on SEPARATE LINES (label + colon on line 1, value on line 2), which the grouping loop in parse_citations() does not handle. It treats each line independently, producing 6 half-citations instead of one grouped citation. FIX 1 async-job study-plan (light regression), FIX 3 session flat shape, FIX 4 dashboard xp alias, and self-test log all clean.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "parse_citations() in /app/backend/server.py (grouping logic ~lines 1073-1120)",
+        "issue": "SOURCES_RE fix works — full block is captured now. But Claude's actual output for the requested multi-line labeled prompt is:\\n\\n## SOURCES\\n\\n**Act/Standard:**\\nIncome Tax Act, 1961\\n\\n**Section/Para:**\\nSection 44AD\\n\\n**Note:**\\nPresumptive taxation scheme ...\\n\\nHere the LABEL (`**Act/Standard:**`) and the VALUE (`Income Tax Act, 1961`) are on SEPARATE lines. The grouping loop treats each non-empty line as its own citation, and _parse_labeled('Act/Standard:') returns None because the value is empty — so the label line falls through to _parse_short with act='Act/Standard:' and the value line becomes a separate citation act='Income Tax Act, 1961'. Result: cits = [{'act':'Act/Standard:',...}, {'act':'Income Tax Act, 1961',...}, {'act':'Section/Para:',...}, {'act':'Section 44AD',...}, {'act':'Note:',...}, {'act':'Presumptive taxation...',...}] — six half-citations, citation[0].section = None, and the leading `Act/Standard:` label leaks into c0.act. Fix suggestion: BEFORE running the grouping loop, pre-process lines to merge a bare-label line (e.g. matches `^\\*?\\*?(Act/Standard|Section/Para|Note)\\s*[:\\-]\\*?\\*?\\s*$`) with the NEXT non-empty line into a single 'Label: value' string. Then feed the merged lines to the existing grouping/labeled/compact parsers."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase3_fixes.py",
+    "/app/test_reports/pytest/iter7_fix2_and_regressions.xml"
+  ],
+  "action_items": [
+    "P1 — parse_citations() needs a pre-processing pass to merge orphan label-only lines with the following value line. Concrete implementation: before the grouping loop, walk the cleaned `lines` list and if a line matches r'^(Act/Standard|Act|Standard|Circular|Section/Para|Section|Para|§|Note)\\s*[:\\-]?\\*?\\*?\\s*$' (i.e. label + optional colon and nothing else), concatenate it with the next non-empty line as 'Label: <next_line>' and remove the next line. Also strip leading `**` and trailing `**` from labels during this merge. This makes the parser robust to both (a) label+value on same line and (b) label / value on adjacent lines — both of which Claude emits in the wild. Add a new self-test sample capturing the exact Claude output above.",
+    "P3 (nice-to-have) — Support `## SOURCES` (markdown h2 header) explicitly in a comment on SOURCES_RE. Currently `(?:\\*\\*)?SOURCES:?\\*?\\*?\\s*` still matches `## SOURCES\\n\\n...` because `##` is skipped via a preceding boundary and the pattern is unanchored, but this is coincidental — worth an explicit `#*\\s*` prefix or a comment."
+  ],
+  "critical_code_review_comments": [
+    "SOURCES_RE terminator fix (\\Z instead of (?:\\n\\n|\\Z)) is correct and IS in place. Prior iter6 failure mode (block truncated at first blank line) is fully resolved — regex now captures 100% of the block.",
+    "The remaining failure is in the DOWNSTREAM grouping logic, not the regex. Claude's real output style shifted between iter6 and iter7 (same prompt): iter6 gave `**Act/Standard:** Income Tax Act, 1961` (label+value same line), iter7 gave `**Act/Standard:**\\n Income Tax Act, 1961` (label and value on adjacent lines). The 4 unit tests in TestFix2CitationsHardened only cover the same-line variants. Add a unit test for label-on-own-line + value-on-next-line before shipping the P1 fix.",
+    "server.py on_event('startup'/'shutdown') deprecation still open (unchanged from iter6). Not blocking.",
+    "In-memory _PLAN_JOBS store still not persisted to Mongo — poll clients get 404 across restarts. Documented earlier; acceptable at current scale."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "89% (8/9 targeted tests + light FIX 1 regression). Unit tests: 4/4. Regressions (FIX1 light / FIX3 / FIX4 / self-test log): 4/4. Live FIX2: 1 pass (compact) / 1 fail (multi-line labeled — new format from Claude)."
+  },
+  "test_credentials": "demo@cagrid.in / demo123 (verified). TEST_other_* signup for cross-user leak test in FIX1.",
+  "seed_data_creation": "1 new mentor session created for compact-form FIX2 live test (passed). 1 mentor session created for multiline FIX2 live test (assertion failed but session persisted). 1 new study-plan async job spawned via light regression (job_id pjob_c4d03bffd3324b) — not polled to completion, saves Claude tokens. No production data modified.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "After main agent applies the P1 grouping-preprocess fix, re-run only tests/test_phase3_fixes.py::TestFix2CitationsHardened. FIX 1 full 90s test_1a does NOT need re-running unless main agent modifies the study-plan path — the endpoint returns in <100ms with a valid job_id and polling is healthy. The other 3 regressions (FIX3, FIX4, self-test log) are stable and rarely need re-verification. Claude output for the multi-line-labeled prompt varies each request — sometimes it emits `**Act/Standard:** value` on one line, sometimes `**Act/Standard:**\\nvalue` on two lines. The grouping fix must handle both.",
+  "rca of the issue": "SOURCES_RE now captures the full block (fix verified). Regex `m.group(1)` returns:\\n\\n  '**Act/Standard:**\\\\nIncome Tax Act, 1961\\\\n\\\\n**Section/Para:**\\\\nSection 44AD\\\\n\\\\n**Note:**\\\\nPresumptive taxation ...'\\n\\nAfter _clean() strips `**` and blank lines, the lines list becomes:\\n\\n  ['Act/Standard:', 'Income Tax Act, 1961', 'Section/Para:', 'Section 44AD', 'Note:', 'Presumptive taxation ...']\\n\\nThe grouping loop then examines each line: `Act/Standard:` matches new_group_re → starts a new group of just that one line → tries _parse_labeled('Act/Standard:') which returns None (empty value) → falls through to _parse_short producing {'act':'Act/Standard:', 'section':None, 'note':None}. Next line `Income Tax Act, 1961` doesn't match new_group_re or label_re → treated as free-form → becomes {'act':'Income Tax Act, 1961', 'section':None, 'note':None}. Repeats for Section/Para, Section 44AD, Note, and Note-value. Root cause: grouping loop does not recognise `label-only line + next line = value` as a two-line pair. Fix: pre-merge label-only lines with the following non-empty line before grouping. Verified by direct reproduction with parse_citations() on the captured Claude output (see /tmp — 6 half-citations output, confirms diagnosis)."
+}

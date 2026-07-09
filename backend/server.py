@@ -1021,7 +1021,7 @@ async def live_pulse():
 # ============================================================
 # PHASE 3 — Mentor (LLM) + Study Plan
 # ============================================================
-SOURCES_RE = re.compile(r"(?:\*\*)?SOURCES:?\*?\*?\s*(.+?)(?:\n\n|\Z)", re.DOTALL | re.IGNORECASE)
+SOURCES_RE = re.compile(r"(?:\*\*)?SOURCES:?\*?\*?\s*(.+)\Z", re.DOTALL | re.IGNORECASE)
 
 
 def _parse_labeled(line: str):
@@ -1119,6 +1119,9 @@ def _selftest_citations():
          {"act": "Ind AS 115", "section": "22-30", "note": None}),
         ("SOURCES:\n**Act/Standard:** Income Tax Act, 1961\n**Section/Para:** Section 44AD\n**Note:** presumptive for eligible businesses",
          {"act": "Income Tax Act, 1961", "section": "Section 44AD", "note": "presumptive for eligible businesses"}),
+        # Claude's natural blank-line-separated form (real-world observed output)
+        ("**SOURCES:**\n\nAct/Standard: Income Tax Act, 1961\n\nSection/Para: Section 44AD\n\nNote: Presumptive taxation scheme for small businesses",
+         {"act": "Income Tax Act, 1961", "section": "Section 44AD", "note": "Presumptive taxation scheme for small businesses"}),
     ]
     for txt, expected in samples:
         got = parse_citations(txt)
