@@ -16,7 +16,7 @@ import math
 import random
 from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime, timezone, timedelta, date
 import asyncio
 import httpx
@@ -259,6 +259,14 @@ class ClientErrorBody(BaseModel):
     stack: Optional[str] = Field(default=None, max_length=8000)
     url: Optional[str] = Field(default=None, max_length=500)
     user_agent: Optional[str] = Field(default=None, max_length=500)
+
+class AccountDeleteRequest(BaseModel):
+    """Confirmation body required to delete an account.
+
+    The literal string forces the client to send the exact phrase, and the
+    resulting OpenAPI schema advertises the guard to API consumers.
+    """
+    confirm: Literal["DELETE MY ACCOUNT"]
 
 class OnboardingBody(BaseModel):
     journey_level: str
@@ -1802,9 +1810,25 @@ async def account_export(request: Request):
     )
 
 
-@api_router.delete("/account/delete")
-@limiter.limit("3/hour")
-async def account_delete(request: Request, response: Response):
+async def _do_account_delete(request: Request, response: Response, body: Optional[dict]):
+    """Shared cascade delete used by both DELETE and POST /api/account/delete."""
+    # Parse confirmation. Accept either an already-parsed dict (from Pydantic) or
+    # raw request body for the DELETE method (some clients / proxies drop bodies
+    # on DELETE — we still enforce the guard).
+    confirm = None
+    if isinstance(body, dict):
+        confirm = body.get("confirm")
+    if confirm != "DELETE MY ACCOUNT":
+        # Try one more read from raw request body for DELETE without body model
+        try:
+            raw = await request.json()
+            if isinstance(raw, dict):
+                confirm = raw.get("confirm")
+        except Exception:
+            pass
+    if confirm != "DELETE MY ACCOUNT":
+        raise HTTPException(status_code=400, detail="Confirmation string required")
+
     user = await require_user(request)
     uid = user["user_id"]
     # Cascade
@@ -1821,6 +1845,28 @@ async def account_delete(request: Request, response: Response):
     response.delete_cookie("session_token", path="/", samesite="none", secure=True)
     log_event("account.delete", user_id=uid, ip=_client_ip(request))
     return {"ok": True}
+
+
+@api_router.delete("/account/delete")
+@limiter.limit("3/hour")
+async def account_delete(request: Request, response: Response):
+    """Destructive: requires JSON body `{"confirm":"DELETE MY ACCOUNT"}`.
+
+    The DELETE method accepts a JSON body (per RFC 7231 §4.3.5 clients MAY send
+    one). We enforce the confirmation string OR return 400.
+    """
+    return await _do_account_delete(request, response, None)
+
+
+@api_router.post("/account/delete")
+@limiter.limit("3/hour")
+async def account_delete_post(body: AccountDeleteRequest, request: Request, response: Response):
+    """Body-friendly alias for `DELETE /api/account/delete`.
+
+    Same destructive semantics, same cascade, same rate limit. Prefer this from
+    browsers where `fetch(url, {method:'DELETE', body})` semantics are wobbly.
+    """
+    return await _do_account_delete(request, response, {"confirm": body.confirm})
 
 
 # ============================================================
@@ -2148,8 +2194,38 @@ app.include_router(api_router)
 app.state.limiter = limiter
 
 async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
-    log_event("ratelimit.exceeded", path=request.url.path, ip=_client_ip(request))
-    return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
+    # SlowAPI attaches the rendered limit description on `exc.detail`
+    # (e.g. "5 per 1 minute"). Parse the unit → seconds; fall back to 60s.
+    retry_after = 60
+    try:
+        raw = str(getattr(exc, "detail", "") or "")
+        low = raw.lower()
+        if "second" in low:
+            # e.g. "10 per 30 second"
+            num = re.search(r"per\s+(\d+)\s*second", low)
+            retry_after = int(num.group(1)) if num else 1
+        elif "minute" in low:
+            num = re.search(r"per\s+(\d+)\s*minute", low)
+            retry_after = (int(num.group(1)) if num else 1) * 60
+        elif "hour" in low:
+            num = re.search(r"per\s+(\d+)\s*hour", low)
+            retry_after = (int(num.group(1)) if num else 1) * 3600
+        elif "day" in low:
+            num = re.search(r"per\s+(\d+)\s*day", low)
+            retry_after = (int(num.group(1)) if num else 1) * 86400
+    except Exception:
+        retry_after = 60
+    log_event(
+        "ratelimit.exceeded",
+        path=request.url.path,
+        ip=_client_ip(request),
+        retry_after=retry_after,
+    )
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded", "retry_after": retry_after},
+        headers={"Retry-After": str(retry_after)},
+    )
 
 app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 

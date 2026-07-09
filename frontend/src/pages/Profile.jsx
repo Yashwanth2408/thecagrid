@@ -45,13 +45,14 @@ export default function Profile() {
   };
 
   const handleDelete = async () => {
-    if (deleteConfirm !== "DELETE") {
-      toast.error('Type DELETE to confirm');
+    if (deleteConfirm !== "DELETE MY ACCOUNT") {
+      toast.error('Type "DELETE MY ACCOUNT" to confirm');
       return;
     }
     setDeleting(true);
     try {
-      await api.delete("/account/delete");
+      // Use POST alias for body-friendly semantics across proxies.
+      await api.post("/account/delete", { confirm: "DELETE MY ACCOUNT" });
       toast.success("Account deleted");
       if (logout) await logout();
       navigate("/", { replace: true });
@@ -238,14 +239,15 @@ export default function Profile() {
                 <div className="space-y-3">
                   <label className="block">
                     <span className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-white/50">
-                      Type DELETE to confirm
+                      Type <span className="text-[#FF6B6B]">DELETE MY ACCOUNT</span> to confirm
                     </span>
                     <input
                       type="text"
                       value={deleteConfirm}
                       onChange={(e) => setDeleteConfirm(e.target.value)}
                       data-testid="account-delete-confirm-input"
-                      className="mt-2 w-full bg-transparent border border-white/[0.15] focus:border-[#FF6B6B] focus:outline-none px-3 py-2 text-sm text-white"
+                      placeholder="DELETE MY ACCOUNT"
+                      className="mt-2 w-full bg-transparent border border-white/[0.15] focus:border-[#FF6B6B] focus:outline-none px-3 py-2 text-sm text-white font-mono"
                     />
                   </label>
                   <div className="flex gap-2">

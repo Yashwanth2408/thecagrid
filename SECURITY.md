@@ -146,3 +146,52 @@ send site. No emails leave the box today. This is documented for the security re
   pod count > 1, move to Redis backend (`slowapi` supports it out of the box).
 - Password reset tokens are stored in Mongo (short-lived TTL). No pepper. Acceptable
   for MVP; consider HMAC-of-token in DB when we add SSO parity.
+
+---
+
+## 9. Known infra caveats (Phase 3.5 tester findings)
+
+These are edge/CDN-level behaviours, not application bugs. Documented here so the
+next on-call engineer doesn't spend a morning chasing them in the code.
+
+### 9.1 `robots.txt` overridden at the edge
+
+Cloudflare has a **"Managed Robots"** setting (Security → Bots → Configure) that,
+when enabled, returns Cloudflare's synthesised `robots.txt` instead of our own
+static file at `/robots.txt`. Symptom: our app-served content is fine locally but
+the public URL serves a different body.
+
+- Fix: disable **"Managed Robots"** on the CF zone for our domain.
+- Verification after fix: `curl -sSL https://<domain>/robots.txt` should match
+  the file at `/app/frontend/public/robots.txt` byte-for-byte.
+
+### 9.2 `OPTIONS` preflight short-circuited with wildcard CORS
+
+Cloudflare intercepts CORS preflights (`OPTIONS`) at the edge and can respond
+with `Access-Control-Allow-Origin: *` before the request reaches our backend.
+This is Cloudflare's default "CORS Trust" or "CORS Preflight" behaviour.
+
+- Impact: **cosmetic only.** Our application-level CORS middleware still runs
+  on the actual (non-preflight) request — see §3 above. A malicious cross-origin
+  page still cannot read our responses because our origin regex kicks in on the
+  real request.
+- Fix (if a stricter posture is desired): disable "Managed CORS" / "CORS
+  Preflight" cache in Cloudflare and let the origin (our FastAPI middleware)
+  handle preflights end-to-end.
+- Verification after fix: `curl -sI -X OPTIONS -H "Origin: https://evil.example"
+  -H "Access-Control-Request-Method: POST" <api>` should NOT return
+  `Access-Control-Allow-Origin: *` and should NOT return `Access-Control-Allow-Origin`
+  matching the evil origin.
+
+### 9.3 `DELETE` with request body
+
+Some intermediaries (older HTTP/1.1 proxies, some Cloudflare Workers) drop the
+body from `DELETE` requests. Because the account-deletion endpoint intentionally
+requires the confirmation string `"DELETE MY ACCOUNT"`, we ship **both**:
+
+- `DELETE /api/account/delete` — reads the body defensively (falls back to
+  `request.json()` if the Pydantic body arg is empty).
+- `POST /api/account/delete` — body-friendly alias that all proxies preserve.
+
+The frontend calls `POST` from `/app/frontend/src/pages/Profile.jsx`. External API
+consumers may use either — both enforce the confirmation guard identically.
