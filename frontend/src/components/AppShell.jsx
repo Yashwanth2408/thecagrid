@@ -6,12 +6,15 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { LayoutGrid, Timer, BarChart3, UserCircle2, LogOut, Settings, User as UserIcon, Sparkles } from "lucide-react";
+import { LayoutGrid, Timer, BarChart3, UserCircle2, LogOut, Settings, User as UserIcon, Sparkles, BookOpen, Radio, Newspaper } from "lucide-react";
 
 const NAV = [
   { key: "dashboard", label: "Dashboard", to: "/dashboard", icon: LayoutGrid },
   { key: "focus", label: "Focus", to: "/focus", icon: Timer },
+  { key: "syllabus", label: "Syllabus", to: "/syllabus", icon: BookOpen },
   { key: "mentor", label: "Mentor", to: "/mentor", icon: Sparkles },
+  { key: "radar", label: "Radar", to: "/radar", icon: Radio },
+  { key: "hub", label: "Hub", to: "/hub", icon: Newspaper },
   { key: "analytics", label: "Analytics", to: "/analytics", icon: BarChart3 },
   { key: "profile", label: "Profile", to: "/profile", icon: UserCircle2 },
 ];
@@ -19,7 +22,10 @@ const NAV = [
 function keyForPath(pathname) {
   if (pathname.startsWith("/dashboard")) return "dashboard";
   if (pathname.startsWith("/focus")) return "focus";
+  if (pathname.startsWith("/syllabus")) return "syllabus";
   if (pathname.startsWith("/mentor")) return "mentor";
+  if (pathname.startsWith("/radar")) return "radar";
+  if (pathname.startsWith("/hub")) return "hub";
   if (pathname.startsWith("/analytics")) return "analytics";
   if (pathname.startsWith("/profile")) return "profile";
   return "";

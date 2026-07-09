@@ -479,6 +479,403 @@ async def get_syllabus(level: Optional[str] = None):
     q = {"level": level} if level else {}
     return await db.syllabus.find(q, {"_id": 0}).to_list(200)
 
+
+# ============================================================
+# PHASE 4 — Syllabus Tracker, Regulatory Radar, Content Hub
+# ============================================================
+
+class SyllabusProgressBody(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    paper_code: str = Field(min_length=1, max_length=8)
+    chapter_id: str = Field(min_length=1, max_length=32)
+    status: Literal["not_started", "in_progress", "revised", "mastered"]
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+def _paper_aggregate(paper: dict, progress_by_chap: dict) -> dict:
+    chapters = paper.get("chapters", []) or []
+    total = len(chapters)
+    mastered = sum(1 for c in chapters if progress_by_chap.get(c["chapter_id"], {}).get("status") == "mastered")
+    revised = sum(1 for c in chapters if progress_by_chap.get(c["chapter_id"], {}).get("status") == "revised")
+    in_prog = sum(1 for c in chapters if progress_by_chap.get(c["chapter_id"], {}).get("status") == "in_progress")
+    hrs_remaining = sum(
+        c.get("estimated_hours", 0)
+        for c in chapters
+        if progress_by_chap.get(c["chapter_id"], {}).get("status") not in ("mastered",)
+    )
+    # completion pct: mastered=1.0, revised=0.75, in_progress=0.4
+    weighted = mastered + 0.75 * revised + 0.4 * in_prog
+    pct = round((weighted / total) * 100, 1) if total else 0
+    return {
+        "paper_code": paper["paper_code"],
+        "paper_name": paper["paper_name"],
+        "level": paper.get("level"),
+        "chapters_total": total,
+        "chapters_mastered": mastered,
+        "chapters_revised": revised,
+        "chapters_in_progress": in_prog,
+        "completion_pct": pct,
+        "estimated_hours_remaining": hrs_remaining,
+    }
+
+
+@api_router.get("/syllabus/progress")
+async def get_syllabus_progress(request: Request, level: Optional[str] = None):
+    user = await require_user(request)
+    lvl = level or user.get("journey_level")
+    if lvl == "all":
+        lvl = None
+    q = {"level": lvl} if lvl else {}
+    papers = await db.syllabus.find(q, {"_id": 0}).to_list(50)
+    prog_rows = await db.user_syllabus_progress.find(
+        {"user_id": user["user_id"]}, {"_id": 0}
+    ).to_list(2000)
+    prog_by_chap = {p["chapter_id"]: p for p in prog_rows}
+    return [_paper_aggregate(p, prog_by_chap) for p in papers]
+
+
+@api_router.get("/syllabus/{paper_code}")
+async def get_syllabus_paper(paper_code: str, request: Request):
+    paper = await db.syllabus.find_one({"paper_code": paper_code}, {"_id": 0})
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    user = await get_current_user(request)
+    prog_by_chap: dict = {}
+    if user:
+        rows = await db.user_syllabus_progress.find(
+            {"user_id": user["user_id"], "paper_code": paper_code}, {"_id": 0}
+        ).to_list(500)
+        prog_by_chap = {r["chapter_id"]: r for r in rows}
+    # decorate chapters
+    chapters_out = []
+    for c in paper.get("chapters", []):
+        p = prog_by_chap.get(c["chapter_id"])
+        chapters_out.append({
+            **c,
+            "status": (p or {}).get("status", "not_started"),
+            "notes": (p or {}).get("notes"),
+            "revised_count": (p or {}).get("revised_count", 0),
+            "updated_at": (p or {}).get("updated_at"),
+        })
+    return {
+        **{k: v for k, v in paper.items() if k != "chapters"},
+        "chapters": chapters_out,
+        "aggregate": _paper_aggregate(paper, prog_by_chap),
+    }
+
+
+@api_router.post("/syllabus/progress")
+async def post_syllabus_progress(body: SyllabusProgressBody, request: Request):
+    user = await require_user(request)
+    paper = await db.syllabus.find_one({"paper_code": body.paper_code}, {"_id": 0})
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    chap = next((c for c in paper.get("chapters", []) if c["chapter_id"] == body.chapter_id), None)
+    if not chap:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    existing = await db.user_syllabus_progress.find_one(
+        {"user_id": user["user_id"], "chapter_id": body.chapter_id}, {"_id": 0}
+    )
+    revised_count = (existing or {}).get("revised_count", 0)
+    if body.status == "revised" and (existing or {}).get("status") != "revised":
+        revised_count += 1
+    doc = {
+        "user_id": user["user_id"],
+        "paper_code": body.paper_code,
+        "chapter_id": body.chapter_id,
+        "status": body.status,
+        "notes": body.notes if body.notes is not None else (existing or {}).get("notes"),
+        "revised_count": revised_count,
+        "updated_at": now_utc(),
+    }
+    await db.user_syllabus_progress.update_one(
+        {"user_id": user["user_id"], "chapter_id": body.chapter_id},
+        {"$set": doc},
+        upsert=True,
+    )
+    # Compute updated paper aggregate
+    rows = await db.user_syllabus_progress.find(
+        {"user_id": user["user_id"], "paper_code": body.paper_code}, {"_id": 0}
+    ).to_list(500)
+    prog_by_chap = {r["chapter_id"]: r for r in rows}
+    return {"record": doc, "paper": _paper_aggregate(paper, prog_by_chap)}
+
+
+# ---------- REGULATORY RADAR ----------
+
+def _resolve_alert_chapters(alert: dict, papers_by_code: dict) -> dict:
+    """Convert affected_topics chapter_numbers → chapter_ids + chapter names."""
+    resolved = []
+    for t in alert.get("affected_topics", []) or []:
+        pcode = t.get("paper_code")
+        paper = papers_by_code.get(pcode)
+        if not paper:
+            continue
+        chap_nums = t.get("chapter_numbers", []) or []
+        chapters = []
+        for c in paper.get("chapters", []):
+            if not chap_nums or c["number"] in chap_nums:
+                chapters.append({
+                    "chapter_id": c["chapter_id"],
+                    "number": c["number"],
+                    "name": c["name"],
+                })
+        resolved.append({
+            "paper_code": pcode,
+            "paper_name": paper.get("paper_name"),
+            "chapters": chapters,
+        })
+    return {**alert, "affected_topics": resolved}
+
+
+IMPACT_ORDER = {"info": 0, "moderate": 1, "critical": 2}
+
+
+@api_router.get("/radar/alerts")
+async def radar_alerts(
+    request: Request,
+    level: Optional[str] = None,
+    impact: Optional[str] = None,
+    days: Optional[int] = None,
+    limit: int = 50,
+):
+    user = await get_current_user(request)
+    q: dict = {}
+    if not level and user:
+        level = user.get("journey_level")
+    if level and level != "all":
+        q["affected_levels"] = level
+    if impact and impact in IMPACT_ORDER:
+        min_imp = IMPACT_ORDER[impact]
+        q["impact_level"] = {"$in": [k for k, v in IMPACT_ORDER.items() if v >= min_imp]}
+    if days and days > 0:
+        cutoff = now_utc() - timedelta(days=days)
+        q["published_at"] = {"$gte": cutoff}
+    alerts = await db.regulatory_alerts.find(q, {"_id": 0}).sort("published_at", -1).limit(min(limit, 200)).to_list(200)
+    # Filter dismissed
+    dismissed_ids = set()
+    if user:
+        dr = await db.user_dismissed_alerts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(1000)
+        dismissed_ids = {d["alert_id"] for d in dr}
+    # Resolve chapters
+    papers = await db.syllabus.find({}, {"_id": 0}).to_list(50)
+    pmap = {p["paper_code"]: p for p in papers}
+    out = []
+    for a in alerts:
+        if a["alert_id"] in dismissed_ids:
+            continue
+        out.append(_resolve_alert_chapters(a, pmap))
+    return {"items": out, "count": len(out)}
+
+
+@api_router.get("/radar/alerts/{alert_id}")
+async def radar_alert_detail(alert_id: str, request: Request):
+    alert = await db.regulatory_alerts.find_one({"alert_id": alert_id}, {"_id": 0})
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    papers = await db.syllabus.find({}, {"_id": 0}).to_list(50)
+    pmap = {p["paper_code"]: p for p in papers}
+    return _resolve_alert_chapters(alert, pmap)
+
+
+@api_router.post("/radar/alerts/{alert_id}/dismiss")
+async def radar_alert_dismiss(alert_id: str, request: Request):
+    user = await require_user(request)
+    alert = await db.regulatory_alerts.find_one({"alert_id": alert_id}, {"_id": 0})
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    await db.user_dismissed_alerts.update_one(
+        {"user_id": user["user_id"], "alert_id": alert_id},
+        {"$set": {"dismissed_at": now_utc()}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+# 60s in-memory cache for radar/summary
+_RADAR_SUMMARY_CACHE: dict = {}
+
+
+@api_router.get("/radar/summary")
+async def radar_summary(request: Request):
+    user = await get_current_user(request)
+    cache_key = user["user_id"] if user else "anon"
+    cached = _RADAR_SUMMARY_CACHE.get(cache_key)
+    if cached and (now_utc() - cached["at"]).total_seconds() < 60:
+        return cached["data"]
+    level = user.get("journey_level") if user else None
+    q: dict = {}
+    if level:
+        q["affected_levels"] = level
+    all_alerts = await db.regulatory_alerts.find(q, {"_id": 0}).sort("published_at", -1).to_list(500)
+    dismissed = set()
+    if user:
+        dr = await db.user_dismissed_alerts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(1000)
+        dismissed = {d["alert_id"] for d in dr}
+    cutoff_7d = now_utc() - timedelta(days=7)
+    critical_7d = [a for a in all_alerts if a.get("impact_level") == "critical" and a.get("published_at") and (a["published_at"].replace(tzinfo=timezone.utc) if a["published_at"].tzinfo is None else a["published_at"]) >= cutoff_7d]
+    undismissed = [a for a in all_alerts if a["alert_id"] not in dismissed]
+    latest3 = undismissed[:3]
+    # slim latest3 for card display
+    slim = [{
+        "alert_id": a["alert_id"], "title": a["title"], "impact_level": a["impact_level"],
+        "source": a["source"], "published_at": a["published_at"],
+    } for a in latest3]
+    data = {
+        "unread_count": len(undismissed),
+        "critical_count_7d": len([a for a in critical_7d if a["alert_id"] not in dismissed]),
+        "latest_3_alerts": slim,
+    }
+    _RADAR_SUMMARY_CACHE[cache_key] = {"at": now_utc(), "data": data}
+    return data
+
+
+# ---------- CONTENT HUB ----------
+
+@api_router.get("/content/posts")
+async def content_posts(request: Request, level: Optional[str] = None, tag: Optional[str] = None, limit: int = 20):
+    user = await get_current_user(request)
+    q: dict = {}
+    lvl = level or (user.get("journey_level") if user else None)
+    if lvl and lvl != "all":
+        q["level_filter"] = lvl
+    if tag:
+        q["tags"] = tag
+    posts = await db.content_posts.find(q, {"_id": 0, "body_markdown": 0}).sort("published_at", -1).limit(min(limit, 100)).to_list(100)
+    return {"items": posts, "count": len(posts)}
+
+
+@api_router.get("/content/posts/{slug}")
+async def content_post_detail(slug: str):
+    post = await db.content_posts.find_one({"slug": slug}, {"_id": 0})
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    # Related posts by shared tags
+    related_q = {"slug": {"$ne": slug}, "tags": {"$in": post.get("tags", [])}}
+    related = await db.content_posts.find(related_q, {"_id": 0, "body_markdown": 0}).limit(3).to_list(3)
+    return {"post": post, "related": related}
+
+
+_CONTENT_DIGEST_CACHE: dict = {}
+
+
+@api_router.get("/content/digest")
+async def content_digest(request: Request):
+    user = await get_current_user(request)
+    cache_key = user["user_id"] if user else "anon"
+    cached = _CONTENT_DIGEST_CACHE.get(cache_key)
+    if cached and (now_utc() - cached["at"]).total_seconds() < 300:
+        return cached["data"]
+    lvl = user.get("journey_level") if user else None
+    q: dict = {}
+    if lvl and lvl != "all":
+        q["level_filter"] = lvl
+    posts = await db.content_posts.find(q, {"_id": 0, "body_markdown": 0}).sort("published_at", -1).to_list(50)
+    if not posts:
+        posts = await db.content_posts.find({}, {"_id": 0, "body_markdown": 0}).sort("published_at", -1).to_list(10)
+    today_pick = posts[0] if posts else None
+    this_week = posts[1:4]
+    data = {"today_pick": today_pick, "this_week": this_week}
+    _CONTENT_DIGEST_CACHE[cache_key] = {"at": now_utc(), "data": data}
+    return data
+
+
+# ---------- WEEKLY RECAP ----------
+
+@api_router.get("/recap/weekly")
+async def recap_weekly(request: Request):
+    user = await require_user(request)
+    uid = user["user_id"]
+    now = now_utc()
+    week_start = now - timedelta(days=7)
+    prev_week_start = now - timedelta(days=14)
+
+    # Focus minutes this week
+    focus_this = await db.focus_sessions.find(
+        {"user_id": uid, "status": "completed", "started_at": {"$gte": week_start}}, {"_id": 0}
+    ).to_list(500)
+    focus_prev = await db.focus_sessions.find(
+        {"user_id": uid, "status": "completed", "started_at": {"$gte": prev_week_start, "$lt": week_start}}, {"_id": 0}
+    ).to_list(500)
+
+    def _sum_min(rows):
+        return sum(r.get("actual_duration_seconds", 0) for r in rows) // 60
+
+    focus_minutes = _sum_min(focus_this)
+    focus_minutes_prev = _sum_min(focus_prev)
+    delta_pct = 0
+    if focus_minutes_prev > 0:
+        delta_pct = round(((focus_minutes - focus_minutes_prev) / focus_minutes_prev) * 100)
+    elif focus_minutes > 0:
+        delta_pct = 100
+
+    # Top subject
+    subj_min: dict = {}
+    for r in focus_this:
+        s = r.get("subject") or "General"
+        subj_min[s] = subj_min.get(s, 0) + r.get("actual_duration_seconds", 0)
+    top_subject = max(subj_min.items(), key=lambda x: x[1])[0] if subj_min else None
+
+    # Stats
+    stats = await db.user_stats.find_one({"user_id": uid}, {"_id": 0}) or {}
+    streak_current = stats.get("current_streak", 0)
+
+    # Chapters completed (moved to mastered) this week
+    chap_rows = await db.user_syllabus_progress.find(
+        {"user_id": uid, "status": "mastered", "updated_at": {"$gte": week_start}}, {"_id": 0}
+    ).to_list(500)
+    chapters_completed = len(chap_rows)
+
+    # Mentor asks
+    mentor_asks = await db.mentor_messages.count_documents(
+        {"user_id": uid, "role": "user", "created_at": {"$gte": week_start}}
+    )
+
+    # Badges earned this week
+    badges = await db.user_achievements.find(
+        {"user_id": uid, "unlocked_at": {"$gte": week_start}}, {"_id": 0}
+    ).to_list(200)
+    badges_earned = [b.get("badge_id") for b in badges]
+
+    # Regulatory unread critical
+    critical_unread = 0
+    lvl = user.get("journey_level")
+    if lvl:
+        crit_q: dict = {"impact_level": "critical", "affected_levels": lvl}
+        crits = await db.regulatory_alerts.find(crit_q, {"_id": 0, "alert_id": 1}).to_list(200)
+        dismissed = set()
+        dr = await db.user_dismissed_alerts.find({"user_id": uid}, {"_id": 0}).to_list(1000)
+        dismissed = {d["alert_id"] for d in dr}
+        critical_unread = sum(1 for a in crits if a["alert_id"] not in dismissed)
+
+    # Next-week focus suggestions — first 2 not_started high-weight chapters
+    next_focus = []
+    papers = await db.syllabus.find({"level": lvl}, {"_id": 0}).to_list(20) if lvl else []
+    prog_rows = await db.user_syllabus_progress.find({"user_id": uid}, {"_id": 0}).to_list(2000)
+    started_ids = {p["chapter_id"] for p in prog_rows if p.get("status") != "not_started"}
+    candidates = []
+    for p in papers:
+        for c in p.get("chapters", []):
+            if c["chapter_id"] not in started_ids:
+                candidates.append((c.get("weightage_pct", 0), f"{p['paper_code']} — {c['name']}"))
+    candidates.sort(reverse=True)
+    next_focus = [c[1] for c in candidates[:2]]
+
+    return {
+        "week_of": week_start.date().isoformat(),
+        "focus_minutes": focus_minutes,
+        "focus_minutes_delta_pct": delta_pct,
+        "sessions_completed": len(focus_this),
+        "streak_current": streak_current,
+        "top_subject": top_subject,
+        "chapters_completed": chapters_completed,
+        "mentor_asks": mentor_asks,
+        "badges_earned": badges_earned,
+        "regulatory_critical_unread": critical_unread,
+        "next_week_focus": next_focus,
+    }
+
+
 # ============================================================
 # PHASE 2 — Focus + XP + Streaks + Badges + Analytics
 # ============================================================
@@ -1788,6 +2185,8 @@ async def account_export(request: Request):
     mentor_sessions = await db.mentor_sessions.find({"user_id": uid}).to_list(1000)
     mentor_messages = await db.mentor_messages.find({"user_id": uid}).to_list(10000)
     study_plans = await db.study_plans.find({"user_id": uid}).to_list(1000)
+    syllabus_progress = await db.user_syllabus_progress.find({"user_id": uid}).to_list(2000)
+    dismissed_alerts = await db.user_dismissed_alerts.find({"user_id": uid}).to_list(500)
 
     payload = {
         "exported_at": now_utc().isoformat(),
@@ -1801,6 +2200,8 @@ async def account_export(request: Request):
         "mentor_sessions": _norm(mentor_sessions),
         "mentor_messages": _norm(mentor_messages),
         "study_plans": _norm(study_plans),
+        "syllabus_progress": _norm(syllabus_progress),
+        "dismissed_alerts": _norm(dismissed_alerts),
     }
     log_event("account.export", user_id=uid, ip=_client_ip(request))
     filename = f"cagrid-export-{uid}-{now_utc().strftime('%Y%m%d')}.json"
@@ -1841,6 +2242,8 @@ async def _do_account_delete(request: Request, response: Response, body: Optiona
     await db.mentor_sessions.delete_many({"user_id": uid})
     await db.study_plans.delete_many({"user_id": uid})
     await db.password_reset_tokens.delete_many({"user_id": uid})
+    await db.user_syllabus_progress.delete_many({"user_id": uid})
+    await db.user_dismissed_alerts.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
     response.delete_cookie("session_token", path="/", samesite="none", secure=True)
     log_event("account.delete", user_id=uid, ip=_client_ip(request))
@@ -1894,24 +2297,9 @@ async def client_errors(body: ClientErrorBody, request: Request):
 # SEED
 # ============================================================
 
-SYLLABUS_SEED = [
-    {"level": "Foundation", "paper_code": "F1", "paper_name": "Principles and Practice of Accounting", "chapters": []},
-    {"level": "Foundation", "paper_code": "F2", "paper_name": "Business Laws and Business Correspondence & Reporting", "chapters": []},
-    {"level": "Foundation", "paper_code": "F3", "paper_name": "Business Mathematics, Logical Reasoning and Statistics", "chapters": []},
-    {"level": "Foundation", "paper_code": "F4", "paper_name": "Business Economics and Business & Commercial Knowledge", "chapters": []},
-    {"level": "Intermediate", "paper_code": "I1", "paper_name": "Advanced Accounting", "chapters": []},
-    {"level": "Intermediate", "paper_code": "I2", "paper_name": "Corporate and Other Laws", "chapters": []},
-    {"level": "Intermediate", "paper_code": "I3", "paper_name": "Cost and Management Accounting", "chapters": []},
-    {"level": "Intermediate", "paper_code": "I4", "paper_name": "Taxation", "chapters": []},
-    {"level": "Intermediate", "paper_code": "I5", "paper_name": "Auditing and Ethics", "chapters": []},
-    {"level": "Intermediate", "paper_code": "I6", "paper_name": "Financial and Strategic Management", "chapters": []},
-    {"level": "Final", "paper_code": "P1", "paper_name": "Financial Reporting", "chapters": []},
-    {"level": "Final", "paper_code": "P2", "paper_name": "Advanced Financial Management", "chapters": []},
-    {"level": "Final", "paper_code": "P3", "paper_name": "Advanced Auditing, Assurance and Professional Ethics", "chapters": []},
-    {"level": "Final", "paper_code": "P4", "paper_name": "Direct Tax Laws and International Taxation", "chapters": []},
-    {"level": "Final", "paper_code": "P5", "paper_name": "Indirect Tax Laws", "chapters": []},
-    {"level": "Final", "paper_code": "P6", "paper_name": "Integrated Business Solutions (Multi-disciplinary Case Study)", "chapters": []},
-]
+from seed_syllabus import SYLLABUS_V2 as SYLLABUS_SEED
+from seed_radar import REGULATORY_ALERTS
+from seed_content import CONTENT_POSTS
 
 DEMO_SUBJECTS = ["Advanced Accounts", "Business Law", "Taxation", "Costing", "Auditing", "Financial Management"]
 
@@ -2176,10 +2564,50 @@ async def run_seed():
     await seed_demo_focus_data(demo["user_id"])
     await seed_demo_mentor_and_plan(demo["user_id"])
 
-    # Syllabus
-    if await db.syllabus.count_documents({}) == 0:
+    # Syllabus — force reseed if any paper has empty chapters (Phase 4 migration)
+    existing_count = await db.syllabus.count_documents({})
+    empty_count = await db.syllabus.count_documents({"chapters": {"$size": 0}})
+    if existing_count == 0 or empty_count > 0:
+        await db.syllabus.delete_many({})
         await db.syllabus.insert_many(SYLLABUS_SEED)
-        logger.info("Seeded syllabus")
+        logger.info(f"Seeded syllabus (papers={len(SYLLABUS_SEED)})")
+
+    # Regulatory alerts
+    if await db.regulatory_alerts.count_documents({}) == 0:
+        await db.regulatory_alerts.insert_many([{**a} for a in REGULATORY_ALERTS])
+        logger.info(f"Seeded regulatory alerts ({len(REGULATORY_ALERTS)})")
+
+    # Content posts
+    if await db.content_posts.count_documents({}) == 0:
+        await db.content_posts.insert_many([{**p} for p in CONTENT_POSTS])
+        logger.info(f"Seeded content posts ({len(CONTENT_POSTS)})")
+
+    # Demo user syllabus progress — 30% mastered on Accounting, 50% in progress on Laws
+    if demo and await db.user_syllabus_progress.count_documents({"user_id": demo["user_id"]}) == 0:
+        i1 = await db.syllabus.find_one({"paper_code": "I1"}, {"_id": 0})
+        i2 = await db.syllabus.find_one({"paper_code": "I2"}, {"_id": 0})
+        rows = []
+        if i1:
+            chapters = i1.get("chapters", [])
+            mastered_n = max(1, int(len(chapters) * 0.3))
+            for c in chapters[:mastered_n]:
+                rows.append({
+                    "user_id": demo["user_id"], "paper_code": "I1",
+                    "chapter_id": c["chapter_id"], "status": "mastered",
+                    "notes": None, "revised_count": 2, "updated_at": now_utc(),
+                })
+        if i2:
+            chapters = i2.get("chapters", [])
+            in_prog_n = max(1, int(len(chapters) * 0.5))
+            for c in chapters[:in_prog_n]:
+                rows.append({
+                    "user_id": demo["user_id"], "paper_code": "I2",
+                    "chapter_id": c["chapter_id"], "status": "in_progress",
+                    "notes": None, "revised_count": 0, "updated_at": now_utc(),
+                })
+        if rows:
+            await db.user_syllabus_progress.insert_many(rows)
+            logger.info(f"Seeded demo syllabus progress ({len(rows)} rows)")
 
 @api_router.post("/seed")
 async def seed_endpoint():
@@ -2310,6 +2738,14 @@ async def startup():
         await db.study_plans.create_index("plan_id", unique=True)
         await db.password_reset_tokens.create_index("token", unique=True)
         await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+        await db.user_syllabus_progress.create_index([("user_id", 1), ("chapter_id", 1)], unique=True)
+        await db.user_syllabus_progress.create_index([("user_id", 1), ("paper_code", 1)])
+        await db.user_dismissed_alerts.create_index([("user_id", 1), ("alert_id", 1)], unique=True)
+        await db.regulatory_alerts.create_index("alert_id", unique=True)
+        await db.regulatory_alerts.create_index([("published_at", -1)])
+        await db.regulatory_alerts.create_index("affected_levels")
+        await db.content_posts.create_index("slug", unique=True)
+        await db.content_posts.create_index([("published_at", -1)])
     except Exception as e:
         logger.warning(f"Index setup: {e}")
     await run_seed()

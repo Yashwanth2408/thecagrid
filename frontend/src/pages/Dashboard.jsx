@@ -10,7 +10,7 @@ import { useAuth } from "@/context/AuthContext";
 import { ArrowRight, PlayCircle } from "lucide-react";
 
 /* ---------- Card primitives ---------- */
-function Card({ children, className = "", radius = 0, borderLeftAccent = false, testId, ...rest }) {
+function Card({ children, className = "", radius = 0, borderLeftAccent = false, testId, style, ...rest }) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
@@ -18,7 +18,7 @@ function Card({ children, className = "", radius = 0, borderLeftAccent = false, 
       transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
       whileHover={{ y: -3 }}
       className={`relative bg-[#0F0F12] border border-white/[0.06] ${borderLeftAccent ? "border-l-2 border-l-[#8B5CF6]" : ""} p-6 hover:border-[#8B5CF6]/30 transition-colors ${className}`}
-      style={{ borderRadius: radius }}
+      style={{ borderRadius: radius, ...(style || {}) }}
       data-testid={testId}
       {...rest}
     >
@@ -313,20 +313,179 @@ function NextUpCard() {
 }
 
 function RadarCard() {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    api.get("/radar/summary").then((r) => setData(r.data)).catch(() => setData({ unread_count: 0, critical_count_7d: 0, latest_3_alerts: [] }));
+  }, []);
+  const critical = (data?.critical_count_7d || 0) > 0;
   return (
-    <Card className="col-span-12 lg:col-span-8 min-h-[220px] flex flex-col justify-between" testId="dashboard-radar">
+    <Card
+      className="col-span-12 lg:col-span-8 min-h-[220px] flex flex-col justify-between"
+      testId="dashboard-radar"
+      style={critical ? { boxShadow: "0 0 0 1px rgba(180,255,57,0.35), 0 0 32px rgba(139,92,246,0.18)" } : undefined}
+    >
       <div className="flex items-center justify-between">
-        <Eyebrow>[ regulatory radar ]</Eyebrow>
-        <div className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#8B5CF6]">COMING · PHASE 04</div>
+        <Eyebrow>[ regulatory radar · {data?.unread_count ?? 0} new ]</Eyebrow>
+        <Link to="/radar" className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#8B5CF6] hover:text-[#F2F2F2]" data-testid="dashboard-radar-open">
+          OPEN →
+        </Link>
       </div>
-      <div className="font-display italic text-[36px] leading-[1] text-[#F2F2F2]">The moment ICAI posts, you'll know.</div>
-      <div className="space-y-2 font-mono text-[11px] text-[#5A5A62]">
-        {["Sch III amendment · draft", "TDS threshold revision · draft", "GSTN downtime · resolved"].map((t) => (
-          <div key={t} className="flex gap-4 border-t border-white/[0.06] pt-2 uppercase tracking-[0.18em]">
-            <span className="text-[#8B5CF6] tabular-nums">—:—</span>
-            <span>{t}</span>
-          </div>
+      <div className="space-y-3 font-mono text-[11px] text-[#5A5A62]">
+        {(data?.latest_3_alerts || []).map((a) => {
+          const impactColor = a.impact_level === "critical" ? "#FF6B6B" : a.impact_level === "moderate" ? "#8B5CF6" : "#5A5A62";
+          const d = new Date(a.published_at);
+          const day = String(d.getUTCDate()).padStart(2, "0");
+          const mon = d.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toUpperCase();
+          return (
+            <Link
+              key={a.alert_id}
+              to="/radar"
+              className="grid grid-cols-[60px_12px_1fr_auto] gap-4 border-t border-white/[0.06] pt-3 items-center hover:text-white/80 transition"
+              data-testid={`dashboard-radar-alert-${a.alert_id}`}
+            >
+              <span className="text-[#8B5CF6] tabular-nums uppercase tracking-[0.18em]">{day} {mon}</span>
+              <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: impactColor }} />
+              <span className="font-display italic not-italic text-[13px] text-white/85 truncate normal-case tracking-normal">
+                <em className="italic">{a.title}</em>
+              </span>
+              <span className="uppercase tracking-[0.2em] text-[9.5px]" style={{ color: impactColor }}>{a.impact_level}</span>
+            </Link>
+          );
+        })}
+        {(!data?.latest_3_alerts || data.latest_3_alerts.length === 0) && (
+          <div className="text-white/50 font-display italic text-[18px] not-italic">nothing new. keep grinding.</div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function SyllabusCard() {
+  const [rows, setRows] = useState([]);
+  useEffect(() => {
+    api.get("/syllabus/progress").then((r) => setRows(r.data || [])).catch(() => setRows([]));
+  }, []);
+  const top3 = [...rows].sort((a, b) => (b.completion_pct - a.completion_pct)).slice(0, 3);
+  const totalMastered = rows.reduce((s, r) => s + (r.chapters_mastered || 0), 0);
+  const totalChap = rows.reduce((s, r) => s + (r.chapters_total || 0), 0);
+  return (
+    <Card className="col-span-12 lg:col-span-4 min-h-[220px] flex flex-col justify-between" testId="dashboard-syllabus">
+      <div className="flex items-center justify-between">
+        <Eyebrow>[ syllabus · {totalMastered}/{totalChap} ]</Eyebrow>
+        <Link to="/syllabus" className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#8B5CF6] hover:text-[#F2F2F2]" data-testid="dashboard-syllabus-open">
+          OPEN →
+        </Link>
+      </div>
+      <div className="space-y-2.5">
+        {top3.map((p) => (
+          <Link
+            key={p.paper_code}
+            to={`/syllabus?paper=${p.paper_code}`}
+            className="flex items-center gap-3 border-t border-white/[0.06] pt-2.5 hover:opacity-90 transition"
+            data-testid={`dashboard-syllabus-${p.paper_code}`}
+          >
+            <svg width="28" height="28" className="flex-shrink-0">
+              <circle cx="14" cy="14" r="12" stroke="rgba(255,255,255,0.08)" strokeWidth="2" fill="none" />
+              <circle
+                cx="14" cy="14" r="12" stroke="#8B5CF6" strokeWidth="2" fill="none"
+                strokeDasharray={`${(p.completion_pct / 100) * (2 * Math.PI * 12)} ${2 * Math.PI * 12}`}
+                strokeLinecap="round" transform="rotate(-90 14 14)"
+              />
+            </svg>
+            <div className="min-w-0 flex-1">
+              <div className="font-mono uppercase tracking-[0.2em] text-[10px] text-[#8B5CF6]">[ {p.paper_code} ]</div>
+              <div className="font-display italic text-[15px] text-white/85 truncate">{p.paper_name}</div>
+            </div>
+            <div className="font-mono tabular-nums text-[11px] text-white/70">{p.chapters_mastered}/{p.chapters_total}</div>
+          </Link>
         ))}
+        {top3.length === 0 && (
+          <div className="font-mono uppercase tracking-[0.2em] text-[10px] text-[#5A5A62]">complete onboarding →</div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function HubCard() {
+  const [pick, setPick] = useState(null);
+  useEffect(() => {
+    api.get("/content/digest").then((r) => setPick(r.data?.today_pick || null)).catch(() => {});
+  }, []);
+  if (!pick) {
+    return (
+      <Card className="col-span-12 lg:col-span-4 min-h-[220px] flex flex-col justify-between" testId="dashboard-hub">
+        <Eyebrow>[ hub · today's pick ]</Eyebrow>
+        <div className="font-mono uppercase tracking-[0.2em] text-[10px] text-[#5A5A62]">no picks today.</div>
+      </Card>
+    );
+  }
+  const [a, b, c] = pick.hero_gradient || ["#7C3AED", "#0A0A0C", "#8B5CF6"];
+  return (
+    <Card className="col-span-12 lg:col-span-4 min-h-[220px] flex flex-col justify-between overflow-hidden" testId="dashboard-hub">
+      <div className="flex items-center justify-between">
+        <Eyebrow>[ hub · today's pick ]</Eyebrow>
+        <Link to="/hub" className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#8B5CF6] hover:text-[#F2F2F2]" data-testid="dashboard-hub-open">
+          OPEN →
+        </Link>
+      </div>
+      <Link to={`/hub/${pick.slug}`} className="block group" data-testid={`dashboard-hub-post-${pick.slug}`}>
+        <div className="w-full h-16 mb-3" style={{ background: `radial-gradient(120% 100% at 20% 10%, ${a}, ${b} 60%, ${c})` }} />
+        <div className="font-mono uppercase tracking-[0.2em] text-[10px] text-[#8B5CF6] mb-1">
+          [ {pick.tags?.[0]?.toUpperCase() || "READ"} ]
+        </div>
+        <div className="font-display italic text-[18px] leading-[1.15] text-white/95 group-hover:text-white transition">
+          {pick.title}
+        </div>
+        <div className="mt-2 font-mono uppercase tracking-[0.2em] text-[10px] text-[#5A5A62]">
+          {pick.author_name} · {pick.read_minutes}M
+        </div>
+      </Link>
+    </Card>
+  );
+}
+
+function RecapCard() {
+  const [rec, setRec] = useState(null);
+  useEffect(() => {
+    api.get("/recap/weekly").then((r) => setRec(r.data)).catch(() => {});
+  }, []);
+  if (!rec) {
+    return (
+      <Card className="col-span-12 lg:col-span-4 min-h-[220px] flex flex-col justify-between" testId="dashboard-recap">
+        <Eyebrow>[ weekly recap ]</Eyebrow>
+        <div className="font-mono uppercase tracking-[0.2em] text-[10px] text-[#5A5A62]">no data this week.</div>
+      </Card>
+    );
+  }
+  const deltaSign = rec.focus_minutes_delta_pct >= 0 ? "+" : "";
+  const hours = Math.floor(rec.focus_minutes / 60);
+  const mins = rec.focus_minutes % 60;
+  return (
+    <Card className="col-span-12 lg:col-span-4 min-h-[220px] flex flex-col justify-between" testId="dashboard-recap">
+      <div className="flex items-center justify-between">
+        <Eyebrow>[ weekly recap ]</Eyebrow>
+        <span className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62]">7D</span>
+      </div>
+      <div className="grid grid-cols-2 gap-3 items-end">
+        <div>
+          <div className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62]">FOCUS</div>
+          <div className="font-display italic text-[36px] text-white leading-[0.95] mt-1">
+            {hours}<span className="text-[18px] text-white/60">h</span> {mins}<span className="text-[14px] text-white/60">m</span>
+          </div>
+          <div className="font-mono uppercase tracking-[0.2em] text-[10px]" style={{ color: rec.focus_minutes_delta_pct >= 0 ? "#B4FF39" : "#F59E0B" }}>
+            {deltaSign}{rec.focus_minutes_delta_pct}% VS PREV
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62]">TOP</div>
+          <div className="font-display italic text-[15px] text-white/90 leading-tight mt-1 truncate">{rec.top_subject || "—"}</div>
+          <div className="mt-3 font-mono uppercase tracking-[0.2em] text-[10px] text-[#5A5A62]">CH DONE</div>
+          <div className="font-mono tabular-nums text-[20px] text-[#B4FF39]">{rec.chapters_completed}</div>
+        </div>
+      </div>
+      <div className="border-t border-white/[0.06] pt-3 font-mono uppercase tracking-[0.2em] text-[10px] text-[#5A5A62]">
+        SESSIONS <span className="text-white/80 tabular-nums">{rec.sessions_completed}</span> · MENTOR <span className="text-white/80 tabular-nums">{rec.mentor_asks}</span> · CRIT <span className="text-[#FF6B6B] tabular-nums">{rec.regulatory_critical_unread}</span>
       </div>
     </Card>
   );
@@ -396,10 +555,14 @@ export default function Dashboard() {
             <HeatmapCard data={data.heatmap_90} />
             <BadgesCard latest={data.latest_badges} progress={data.badge_progress} />
 
+            <SyllabusCard />
+            <RadarCard />
+
+            <HubCard />
+            <RecapCard />
+
             <TopSubjectsCard subjects={data.top_subjects} />
             <NextUpCard />
-
-            <RadarCard />
           </div>
         )}
       </div>
