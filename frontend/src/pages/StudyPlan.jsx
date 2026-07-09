@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/apiClient";
+import { streamSSE } from "@/lib/streamSSE";
 import { useAuth } from "@/context/AuthContext";
 
 export default function StudyPlan() {
@@ -13,6 +14,7 @@ export default function StudyPlan() {
   const [weakAreas, setWeakAreas] = useState(defaultSubjects.slice(0, 2));
   const [customWeak, setCustomWeak] = useState("");
   const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
 
@@ -26,18 +28,30 @@ export default function StudyPlan() {
   const generate = async () => {
     setBusy(true);
     setError("");
+    setStatus("opening…");
     try {
-      const r = await api.post("/study-plan/generate", {
+      let plan = null;
+      for await (const ev of streamSSE("/study-plan/generate", {
         exam_date: examDate,
         daily_hours: dailyHours,
         weak_areas: weakAreas,
-      });
-      setExisting(r.data);
-      setShowForm(false);
+      })) {
+        if (ev.type === "start") setStatus("drafting…");
+        else if (ev.type === "progress") setStatus(ev.message || "working…");
+        else if (ev.type === "done") plan = ev.plan;
+        else if (ev.type === "error") { setError(ev.error || "Generation failed"); break; }
+      }
+      if (plan) {
+        setExisting(plan);
+        setShowForm(false);
+      } else if (!error) {
+        setError("No plan returned");
+      }
     } catch (e) {
-      setError(e?.response?.data?.detail || "Generation failed");
+      setError(e?.message || "Generation failed");
     } finally {
       setBusy(false);
+      setStatus("");
     }
   };
 
@@ -143,7 +157,7 @@ export default function StudyPlan() {
                   data-testid="study-plan-generate"
                 >
                   <span className="relative">
-                    [ {busy ? "generating" : "generate plan"} →
+                    [ {busy ? (status || "generating") : "generate plan"} →
                     <span className="absolute left-0 -bottom-1 h-px w-full bg-[#8B5CF6] scale-x-0 origin-left group-hover:scale-x-100 transition-transform duration-500" />
                   </span>
                   <span>]</span>

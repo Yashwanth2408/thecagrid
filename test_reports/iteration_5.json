@@ -1,0 +1,65 @@
+{
+  "summary": "Targeted verification of 4 Phase 3 fixes (P0 SSE study plan, P1 citation parser, P1 mentor session flat shape, P2 dashboard xp alias). 7/8 pytest passing. Two issues found: (1) [CRITICAL] k8s ingress terminates SSE streams at ~60s while Claude study-plan generation takes 60-90s — the frontend correctly consumes the SSE stream and shows mono status text updates (drafting → sketching → allocating → spacing → reserving → finalising, with pulsing dots), but at the 60s mark the ingress cuts the connection, the client falls out of the streamSSE loop with no `done` event, and the UI displays inline `[ error · no plan returned ]`. Localhost:8001 completes cleanly in ~85s with 13 weeks. (2) A latent MongoDB ObjectId JSON serialization bug in _study_plan_stream `done` event (fixed inline — insert_one mutates doc to add _id ObjectId which broke json.dumps and aborted the stream prematurely at any latency). (3) FIX 2 live citation parser is 90% correct — added `**` markdown bold stripping so labeled/compact single-line forms parse cleanly; but Claude naturally emits SOURCES entries as multi-line labeled blocks (Act/Standard on line 1, Section/Para on line 2, Note on line 3) which the current line-by-line parser cannot group — result: citations[0] has clean `act` but null `section` and subsequent citations leak `Section/Para:` / `Note:` labels into `act`. FIX 3 (flat mentor session shape) and FIX 4 (stats.xp_total alias) both fully verified.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/study-plan/generate (SSE)",
+        "issue": "K8s ingress terminates the SSE stream at ~60s (verified: localhost:8001 completes in 84.5s with 13 weeks and `done` event; via public REACT_APP_BACKEND_URL the client gets `Response ended prematurely` at exactly 61s, before Claude finishes). Frontend UX correctly shows status updates for the first 60s but ends with inline `[ error · no plan returned ]` because the SSE stream never delivers `done`. Heartbeats every 5s do NOT keep the ingress alive past 60s.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "POST /api/study-plan/generate (SSE)",
+        "issue": "FIXED IN THIS PASS — the `done` event yielded `{**doc, ...}` where `doc` was the dict passed to `db.study_plans.insert_one(doc)`. Motor mutates that dict adding `_id: ObjectId(...)`, which caused `json.dumps` in `_sse_wrap` to raise `TypeError: Object of type ObjectId is not JSON serializable` — aborting the stream with `Response ended prematurely` on every generation. Patched by explicitly excluding `_id`.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "parse_citations() in server.py",
+        "issue": "Multi-line labeled SOURCES entries are not grouped. Real Claude output frequently emits `**Act/Standard:** Income Tax Act, 1961\\n**Section/Para:** Section 44AD\\n**Note:** ...` (three separate lines per citation, with `**` markdown bold). The parser iterates line-by-line so it produces one citation per line — `citations[0]` gets act='Income Tax Act, 1961' with section=null; `citations[1]` gets act='Section/Para: Section 44AD' (label leaked into act); `citations[2]` gets act='Note: ...' (Note: leaked into act). FIX 2 assertion `citations[0].section` non-null FAILS. I've hardened the parser (stripped `**`/`*`/`__` markdown) but multi-line grouping is a bigger rewrite left to main agent.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "startup",
+        "issue": "The latest backend startup emits NO citation self-test warnings (verified via log grep after last 'Application startup complete.'). All 4 self-test samples pass with the current parser. FIX 2 self-test requirement met."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "/mentor/study-plan generate",
+        "issue": "streamSSE consumption is correct — status text updates flow perfectly (drafting the strategy → sketching week structure → allocating hours to weak areas → spacing revision blocks → reserving mock tests → finalising day-by-day tasks) with pulsing purple dots. But because the k8s ingress kills the SSE stream at ~60s (before Claude finishes ~85s), no `done` event ever reaches the client and the UI shows inline `[ error · no plan returned ]`. NO 502 or backend error appears in browser console. This is an infrastructure timeout, not a frontend bug.",
+        "affected_selectors": ["[data-testid='study-plan-generate']", "[data-testid='sp-regenerate']"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase3_fixes.py",
+    "/app/test_reports/pytest/fixes_results.xml"
+  ],
+  "action_items": [
+    "P0 — Solve the 60s k8s ingress SSE cutoff for /api/study-plan/generate. Options: (a) shorten Claude prompt / reduce output tokens so p95 < 55s, (b) switch to non-streaming background job — return {plan_id, status:'pending'} immediately, poll /api/study-plan/{id}, (c) stream Claude token deltas as `progress` events (may keep ingress alive if it's an idle timeout rather than absolute limit — worth trying), (d) generate per-week and stitch client-side. Also update frontend to gracefully handle a mid-stream disconnect with resume rather than 'no plan returned'.",
+    "P1 — Rewrite parse_citations() to group multi-line labeled SOURCES entries. Adjacent lines starting with a label (Act/Standard, Section/Para, Note) should merge into one citation. Add self-test sample for the multi-line block that Claude emits (already captured verbatim in RCA below).",
+    "P2 — Consider adding a self-test warning check to CI so future prompt/model changes don't regress citation parsing silently."
+  ],
+  "critical_code_review_comments": [
+    "server.py: _study_plan_stream mutated `doc` via insert_one and then yielded `{**doc, ...}` — ObjectId slipped through. Fixed by explicit exclusion. Recommend a shared helper `strip_mongo_id(d)` used everywhere docs are yielded/returned.",
+    "server.py: parse_citations processes SOURCES lines individually — needs a state machine to merge multi-line labeled blocks. Current regex handles single-line labeled OK.",
+    "server.py: `@app.on_event('startup'/'shutdown')` still deprecated — flagged in prior iterations.",
+    "The 5s heartbeat inside _study_plan_stream is emitted but does NOT prevent the k8s ingress termination at 60s. Heartbeats are visible on localhost (they do reach client), so the issue is not backend buffering — it's an ingress absolute-max-duration policy for streaming responses."
+  ],
+  "updated_files": [
+    "/app/backend/server.py — (1) _study_plan_stream: exclude `_id` from yielded plan dict to fix ObjectId JSON serialization crash; (2) parse_citations: strip `**`/`*`/`__`/backtick markdown from each SOURCES line before parsing",
+    "/app/backend/tests/test_phase3_fixes.py — new focused verification suite (8 tests)"
+  ],
+  "success_rate": {"backend": "88% (7/8 targeted tests)", "frontend": "study-plan SSE UX partial: status streaming works cleanly but generation cannot complete via public URL due to ingress 60s cap"},
+  "test_credentials": "demo@cagrid.in / demo123 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None — used auto-seeded demo user + auto-seeded active plan. My test suite generated one new study plan on localhost (weak_areas Taxation/Auditing, 90-day) as part of FIX 1 verification and one via frontend that timed out; frontend regenerate archived the prior plan then failed to complete.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The Phase 3 fix pass is 5/6 verified: FIX 1 (SSE endpoint IS correctly SSE with start/progress/done events + X-Accel-Buffering: no + text/event-stream) — verified end-to-end via localhost:8001 in ~85s; FIX 1b (active returns freshly generated plan) — verified; FIX 3 (flat mentor session shape with top-level title/message_count) — verified; FIX 4 (stats.total_xp AND stats.xp_total both present, equal, non-null, matching /stats/me) — verified; FIX 2 (citation parser) — 3/4 unit forms pass, but Claude's natural multi-line labeled format is still not grouped. FIX 1c (frontend SSE consumption) — status streaming works but final render fails at 60s due to k8s ingress SSE limit. **Do NOT rerun the frontend generate test more than once per 90s** — each attempt consumes real Claude credits (~2-4k tokens). The last plan generated on localhost has weak_areas=[Taxation, Auditing] and 13 weeks — it's the currently active plan. My test file /app/backend/tests/test_phase3_fixes.py routes the SSE test to LOCAL_API=http://localhost:8001/api specifically to bypass the ingress; this is intentional and documented.",
+  "rca of the issue": "ISSUE 1 (RESOLVED IN THIS PASS): _study_plan_stream did `doc = {...}; await db.study_plans.insert_one(doc); yield {'type':'done','plan':{**doc, 'created_at': doc['created_at'].isoformat()}}`. Motor's `insert_one` mutates the passed dict to add `_id: ObjectId(...)`. When _sse_wrap called `json.dumps(ev)` on the done event, it raised `TypeError: Object of type ObjectId is not JSON serializable`, which starlette caught and closed the stream mid-response — the client saw `ChunkedEncodingError: Response ended prematurely`. Fixed by `plan_out = {k: v for k, v in doc.items() if k != '_id'}` before yield. Verified via localhost: 13 weeks streamed successfully in 84.5s. ISSUE 2 (OPEN): k8s ingress at *.internal.preview.emergentagent.com terminates streaming responses at 60s regardless of X-Accel-Buffering: no or 5s server heartbeats. Reproduced via `curl -N` and requests.iter_lines: exactly 61s → premature EOF. Localhost:8001 has no such limit — same code streams to 85s cleanly. Main agent must either shorten Claude prompt (<55s p95) or switch to poll-based generation. ISSUE 3 (OPEN): parse_citations line-by-line iteration cannot group multi-line labeled SOURCES entries. Actual Claude output captured verbatim: `**Act/Standard:** Income Tax Act, 1961\\n**Section/Para:** Section 44AD\\n**Note:** ...`. After my `**` strip, first line parses to citation[0].act='Income Tax Act, 1961' (clean) but section=null; second line becomes citation[1].act='Section/Para: Section 44AD' (label leaks); third line becomes citation[2].act='Note: ...' (label leaks). Needs a state-machine merge or a two-pass strategy: first collapse contiguous 'Label: value' lines into a single ';'-separated line, then run _parse_labeled."
+}

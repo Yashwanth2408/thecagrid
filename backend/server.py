@@ -17,6 +17,7 @@ from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
 from datetime import datetime, timezone, timedelta, date
+import asyncio
 import httpx
 import bcrypt
 import pytz
@@ -712,6 +713,7 @@ async def stats_snapshot(user_id: str) -> dict:
     week_min = sum(int(x.get("minutes", 0)) for x in week_docs)
     return {
         "total_xp": s.get("total_xp", 0),
+        "xp_total": s.get("total_xp", 0),
         "level": lvl["level"],
         "xp_to_next_level": lvl["xp_to_next_level"],
         "xp_in_level": lvl["xp_in_level"],
@@ -1019,36 +1021,93 @@ async def live_pulse():
 # ============================================================
 # PHASE 3 — Mentor (LLM) + Study Plan
 # ============================================================
-SOURCES_RE = re.compile(r"SOURCES:\s*(.+?)(?:\n\n|$)", re.DOTALL | re.IGNORECASE)
-CITATION_LINE_RE = re.compile(
-    r"[-•]\s*(?:Act/Standard|Act|Standard|Circular):\s*(?P<act>[^\n,]+)(?:,?\s*(?:Section|Section/Para|Para|§):\s*(?P<sec>[^\n]+))?"
-)
+SOURCES_RE = re.compile(r"(?:\*\*)?SOURCES:?\*?\*?\s*(.+?)(?:\n\n|\Z)", re.DOTALL | re.IGNORECASE)
+
+
+def _parse_labeled(line: str):
+    """Match 'Act/Standard: X; Section/Para: Y; Note: Z' (any separator: ; , newlines already stripped)."""
+    parts = {}
+    for m in re.finditer(
+        r"(?P<k>Act/Standard|Act|Standard|Circular|Section/Para|Section|Para|§|Note)\s*[:\-]\s*(?P<v>[^;\n]+?)(?=(?:\s*[;,]?\s+(?:Act/Standard|Act|Standard|Circular|Section/Para|Section|Para|§|Note)\s*[:\-])|$)",
+        line, flags=re.IGNORECASE,
+    ):
+        k = m.group("k").lower()
+        v = m.group("v").strip().rstrip(",;")
+        if k in ("act/standard", "act", "standard", "circular"):
+            parts["act"] = v
+        elif k in ("section/para", "section", "para", "§"):
+            parts["section"] = v
+        elif k == "note":
+            parts["note"] = v
+    return parts if parts.get("act") else None
+
+
+def _parse_compact(line: str):
+    """Compact form '<Act> — §<Section> [<Note>]' or '<Act>, Section <X> (<Note>)' or '<Act>, Section <X>'."""
+    # 1) Act — §Section [Note]  or Act – §Section [Note]
+    m = re.match(r"\s*(?P<act>[^—–\-]+?)\s*[—–\-]\s*§\s*(?P<sec>[^\[\n]+?)(?:\s*\[(?P<note>[^\]]+)\])?\s*$", line)
+    if m:
+        return {"act": m.group("act").strip(), "section": m.group("sec").strip(),
+                "note": (m.group("note") or "").strip() or None}
+    # 2) Act, Section X (Note)  — allow internal commas in Act (e.g. "Income Tax Act, 1961")
+    m = re.match(r"\s*(?P<act>.+?),\s*(?:Section|Sec|§|Para)\s*(?P<sec>[^\(\n]+?)(?:\s*\((?P<note>[^\)]+)\))?\s*$", line, re.IGNORECASE)
+    if m:
+        return {"act": m.group("act").strip(), "section": m.group("sec").strip(),
+                "note": (m.group("note") or "").strip() or None}
+    return None
 
 
 def parse_citations(text: str) -> list:
-    """Extract citations from the SOURCES block if present."""
+    """Extract structured citations from a SOURCES block.
+    Handles labeled form (Act/Standard: X; Section: Y; Note: Z), compact form (Act — §Sec [Note]),
+    and short form (Act, Section X (Note)). Falls back to putting the whole line into 'act'.
+    """
     m = SOURCES_RE.search(text or "")
     if not m:
         return []
-    block = m.group(1)
     out = []
-    for line in block.splitlines():
-        line = line.strip()
-        if not line:
+    for raw in m.group(1).splitlines():
+        line = raw.strip().lstrip("-•· ").strip()
+        # Strip markdown bold/italic markers that LLM sometimes emits
+        line = re.sub(r"\*\*|\*|__|`", "", line).strip()
+        if not line or line.lower().startswith(("sources", "source:")):
             continue
-        cm = CITATION_LINE_RE.search(line)
-        if cm:
+        parsed = _parse_labeled(line) or _parse_compact(line)
+        if parsed:
             out.append({
-                "act": cm.group("act").strip(),
-                "section": (cm.group("sec") or "").strip() or None,
-                "note": None,
+                "act": parsed.get("act"),
+                "section": parsed.get("section"),
+                "note": parsed.get("note"),
             })
         else:
-            # Fallback: simple "- something — details"
-            if line.startswith(("-", "•")):
-                trimmed = line.lstrip("-• ").strip()
-                out.append({"act": trimmed, "section": None, "note": None})
+            out.append({"act": line, "section": None, "note": None})
     return out
+
+
+# Self-test on import (dev-only visibility)
+def _selftest_citations():
+    samples = [
+        ("SOURCES:\n- Income Tax Act, 1961 — §44AD [DEEMED PROFITS]",
+         {"act": "Income Tax Act, 1961", "section": "44AD", "note": "DEEMED PROFITS"}),
+        ("SOURCES:\n- Act/Standard: Income Tax Act, 1961; Section/Para: 44AD; Note: presumptive taxation for small businesses",
+         {"act": "Income Tax Act, 1961", "section": "44AD", "note": "presumptive taxation for small businesses"}),
+        ("SOURCES:\n- Income Tax Act, 1961, Section 44AD (presumptive taxation)",
+         {"act": "Income Tax Act, 1961", "section": "44AD", "note": "presumptive taxation"}),
+        ("SOURCES:\n- Ind AS 115, Section 22-30",
+         {"act": "Ind AS 115", "section": "22-30", "note": None}),
+    ]
+    for txt, expected in samples:
+        got = parse_citations(txt)
+        if not got:
+            logger.warning(f"citation self-test miss: {txt!r}")
+            continue
+        first = got[0]
+        for k, v in expected.items():
+            if first.get(k) != v:
+                logger.warning(f"citation self-test mismatch on {k}: got={first.get(k)!r} want={v!r} line={txt!r}")
+                break
+
+_selftest_citations()
 
 
 async def build_user_ctx(user_id: str) -> dict:
@@ -1140,7 +1199,17 @@ async def mentor_get_session(session_id: str, request: Request):
         v = s.get(k)
         if isinstance(v, datetime):
             s[k] = v.isoformat()
-    return {"session": s, "messages": msgs}
+    # Flat shape matching list endpoint + messages array
+    return {
+        "session_id": s.get("session_id"),
+        "title": s.get("title"),
+        "mode": s.get("mode"),
+        "message_count": s.get("message_count", 0),
+        "created_at": s.get("created_at"),
+        "updated_at": s.get("updated_at"),
+        "session": s,       # kept for backward compat with existing frontend
+        "messages": msgs,
+    }
 
 
 @api_router.delete("/mentor/sessions/{session_id}")
@@ -1246,59 +1315,111 @@ async def mentor_quick(body: MentorQuickBody, request: Request):
     )
 
 
-# ---- Study plan ----
+async def _study_plan_stream(user_id: str, exam_date: str, daily_hours: float, weak_areas: List[str]):
+    """SSE generator: start → progress heartbeats every ~5s → done with the persisted plan → error on failure."""
+    try:
+        try:
+            exam_dt = datetime.strptime(exam_date, "%Y-%m-%d").date()
+        except ValueError:
+            yield {"type": "error", "error": "exam_date must be YYYY-MM-DD"}
+            return
+        days_until = max(1, (exam_dt - now_ist().date()).days)
+
+        yield {"type": "start"}
+        yield {"type": "progress", "message": "drafting the strategy…"}
+
+        ctx = await build_user_ctx(user_id)
+        prompt = build_study_plan_prompt(ctx, exam_date, days_until, daily_hours, weak_areas)
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"plan_{uuid.uuid4().hex[:10]}",
+            system_message="You produce concise, valid JSON study plans. Output ONLY JSON, no prose.",
+        ).with_model(*MENTOR_MODEL)
+
+        chunks: list = []
+        stream_done = asyncio.Event()
+
+        async def _run_llm():
+            try:
+                async for ev in chat.stream_message(UserMessage(text=prompt)):
+                    if isinstance(ev, TextDelta):
+                        chunks.append(ev.content)
+                    elif isinstance(ev, StreamDone):
+                        break
+            finally:
+                stream_done.set()
+
+        llm_task = asyncio.create_task(_run_llm())
+        step = 0
+        heartbeats = [
+            "sketching week structure…",
+            "allocating hours to weak areas…",
+            "spacing revision blocks…",
+            "reserving mock tests…",
+            "finalising day-by-day tasks…",
+        ]
+        while not stream_done.is_set():
+            try:
+                await asyncio.wait_for(stream_done.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                msg = heartbeats[min(step, len(heartbeats) - 1)]
+                step += 1
+                yield {"type": "progress", "message": msg}
+
+        try:
+            await llm_task
+        except Exception as e:
+            yield {"type": "error", "error": f"LLM failed: {e}"}
+            return
+
+        text = "".join(chunks).strip()
+        # Strip ```json fences and any preamble; find first {...} block as fallback
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        try:
+            plan_json = _json.loads(text)
+        except Exception:
+            m = re.search(r"\{[\s\S]*\}", text)
+            if m:
+                try:
+                    plan_json = _json.loads(m.group(0))
+                except Exception as e:
+                    yield {"type": "error", "error": f"LLM returned non-JSON: {e}"}
+                    return
+            else:
+                yield {"type": "error", "error": "LLM returned non-JSON"}
+                return
+
+        plan_id = f"plan_{uuid.uuid4().hex[:14]}"
+        await db.study_plans.update_many(
+            {"user_id": user_id, "status": "active"},
+            {"$set": {"status": "archived"}},
+        )
+        doc = {
+            "plan_id": plan_id, "user_id": user_id,
+            "exam_date": exam_date, "daily_hours": daily_hours,
+            "weak_areas": weak_areas, "plan_json": plan_json,
+            "created_at": now_utc(), "status": "active",
+        }
+        await db.study_plans.insert_one(doc)
+        # Exclude Mongo's _id (ObjectId, not JSON-serializable) and normalize datetime
+        plan_out = {k: v for k, v in doc.items() if k != "_id"}
+        plan_out["created_at"] = doc["created_at"].isoformat()
+        yield {"type": "done", "plan": plan_out}
+    except Exception as e:
+        logger.exception("study plan stream error")
+        yield {"type": "error", "error": str(e)}
+
+
 @api_router.post("/study-plan/generate")
 async def study_plan_generate(body: StudyPlanBody, request: Request):
     user = await require_user(request)
-    ctx = await build_user_ctx(user["user_id"])
-    try:
-        exam_dt = datetime.strptime(body.exam_date, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(400, "exam_date must be YYYY-MM-DD")
-    days_until = max(1, (exam_dt - now_ist().date()).days)
-    prompt = build_study_plan_prompt(ctx, body.exam_date, days_until, body.daily_hours, body.weak_areas)
-
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=f"plan_{uuid.uuid4().hex[:10]}",
-        system_message="You produce concise, valid JSON study plans. Output ONLY JSON, no prose.",
-    ).with_model(*MENTOR_MODEL)
-
-    chunks = []
-    try:
-        async for ev in chat.stream_message(UserMessage(text=prompt)):
-            if isinstance(ev, TextDelta):
-                chunks.append(ev.content)
-            elif isinstance(ev, StreamDone):
-                break
-    except Exception as e:
-        logger.exception("study plan generation failed")
-        raise HTTPException(502, f"LLM failed: {e}")
-
-    text = "".join(chunks).strip()
-    # strip ```json fences if present
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        plan_json = _json.loads(text)
-    except Exception as e:
-        raise HTTPException(502, f"LLM returned non-JSON: {e}")
-
-    plan_id = f"plan_{uuid.uuid4().hex[:14]}"
-    # Archive previous active plans
-    await db.study_plans.update_many(
-        {"user_id": user["user_id"], "status": "active"},
-        {"$set": {"status": "archived"}},
+    return StreamingResponse(
+        _sse_wrap(_study_plan_stream(user["user_id"], body.exam_date, body.daily_hours, body.weak_areas)),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
-    doc = {
-        "plan_id": plan_id, "user_id": user["user_id"],
-        "exam_date": body.exam_date, "daily_hours": body.daily_hours,
-        "weak_areas": body.weak_areas, "plan_json": plan_json,
-        "created_at": now_utc(), "status": "active",
-    }
-    await db.study_plans.insert_one(doc)
-    return {**doc, "_id": None, "created_at": doc["created_at"].isoformat()}
 
 
 @api_router.get("/study-plan/active")
