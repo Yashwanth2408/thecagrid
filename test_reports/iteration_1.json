@@ -1,0 +1,43 @@
+{
+  "summary": "Comprehensive backend + frontend testing of The CA Grid Phase 1 (Landing, Auth, Onboarding, Dashboard). Backend: 14/15 pytest tests passed (auth flows, onboarding, syllabus, seed idempotence, /me with cookie + Bearer, logout invalidation). Frontend: All 7 UI flows passed via Playwright (landing bento & testimonials, wrong-password error, demo login -> dashboard, signup -> onboarding Aspiring path with quiz + fit score card, Foundation path skips quiz, confetti+finish -> dashboard, logout -> / and /dashboard -> /login bounce, dashboard persists after reload, Google OAuth URL structure correct). One backend bug found: /api/openapi.json is NOT publicly accessible (returns 404) — FastAPI serves the schema at root /openapi.json which is captured by the frontend ingress and returns HTML instead. This violates a stated Phase 1 requirement.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/openapi.json",
+        "issue": "Returns 404 (FastAPI mounts openapi at root /openapi.json which is routed to the frontend by ingress). The problem statement requires /api/openapi.json to be publicly accessible and list routes. Fix: set app = FastAPI(title='...', openapi_url='/api/openapi.json', docs_url='/api/docs', redoc_url='/api/redoc')."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Expose OpenAPI under /api by setting FastAPI(openapi_url='/api/openapi.json', docs_url='/api/docs', redoc_url='/api/redoc') so the schema is reachable via the /api ingress route."
+  ],
+  "critical_code_review_comments": [
+    "server.py is a single ~390-line file — acceptable for Phase 1, but as more routers are added, split into routers/auth.py, routers/onboarding.py, routers/syllabus.py.",
+    "CORS uses allow_origin_regex='.*' with allow_credentials=True. Functionally works because Starlette echoes the request origin, but this is effectively 'wildcard with creds' which is discouraged in production. Restrict to explicit prod origins before shipping.",
+    "@app.on_event('startup')/shutdown are deprecated in FastAPI; migrate to lifespan context manager.",
+    "get_current_user is a plain function rather than a FastAPI dependency; wire it via Depends() so protected endpoints declare auth in their signature (enables OpenAPI documentation and testability).",
+    "auth_google_session accepts session_token from Emergent response but also generates a fallback token — good defensive coding. However, cookie is not upserted onto the same token if user hits the endpoint twice with different X-Session-IDs — old sessions are not cleaned up. Consider capping active sessions per user.",
+    "Password minimum length is 6 which is weak; consider >= 8 with complexity in production.",
+    "Frontend AuthContext.checkAuth swallows every error (catch {} sets user=null). Fine for /me 401 but hides real network failures — no user-visible retry."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py"
+  ],
+  "success_rate": {"backend": "93%", "frontend": "100%"},
+  "test_credentials": "demo@cagrid.in / demo123 (seeded automatically on backend startup; re-seed via POST /api/seed)",
+  "seed_data_creation": "Fresh users created during tests: e2e_*@cagrid.in, test_*@cagrid.in, onb_*@cagrid.in, dup_*@cagrid.in. Not cleaned up (no delete API exposed).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All auth transports (cookie + Bearer) verified working. /api/auth/me correctly returns 401 (not 403) when unauthenticated. Session invalidation on logout works for both cookie and Bearer variants. Onboarding correctly branches for Aspiring (5-question quiz + fit-score-card + roadmap) vs non-Aspiring (skip quiz). Confetti fires on finish. Dashboard is protected via ProtectedRoute. Google OAuth URL construction verified via request interception: https://auth.emergentagent.com/?redirect=<encoded origin/dashboard> — cannot complete full flow without real Emergent redirect; use direct mongo session seeding per /app/auth_testing.md if needed.",
+  "rca of the issue": "OpenAPI 404 root cause: FastAPI() defaults openapi_url='/openapi.json' which is served at the app root. All /api/* routes go through the api_router (prefix=/api) and are proxied to the backend by ingress; anything without /api goes to the React app. Since the schema is at /openapi.json (root) and root is a React route, the frontend HTML is served. Fix by overriding openapi_url on the FastAPI() constructor to include the /api prefix."
+}
