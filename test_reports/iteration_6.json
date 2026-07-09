@@ -1,0 +1,36 @@
+{
+  "summary": "Second-pass verification of Phase 3 fixes. 12/13 tests PASS. FIX 1 (async-job study plan) fully verified end-to-end: POST /study-plan/generate returns {job_id,status:'pending'} in <1s; polling /status/{job_id} shows progress transitions 'queued' → 'drafting the strategy…' → 'generating… (N chars)' with N monotonically increasing (1809 → 4188 → 6234 → 8680 → 11050 → 13299 → done); full generation completes in ~90s well under the 4-min ceiling, no 60s truncation. FIX 1b/401/404 leak checks pass. FIX 1c prior-plan-archived + new-plan-active verified. FIX 1d frontend polling flow works end-to-end at the public URL — clicking [ GENERATE PLAN → ] on /mentor/study-plan shows the mono progress text updating live, pulsing purple dots visible, and 13-week plan rendered cleanly (Taxation/Auditing weak areas honoured, no 502 error). FIX 2b self-test log clean after last restart. FIX 3 & FIX 4 regressions pass. FIX 2 partial: the 4 unit-test variants of parse_citations (compact, single-line-labeled, multiline-labeled contiguous, dash-bullet multiline) all pass; but the LIVE end-to-end test (with the exact prompt requested by the review) fails because Claude naturally emits SOURCES entries with BLANK LINES between each labeled entry, and SOURCES_RE terminates at the first '\\n\\n'. Only citation[0].act is captured; section and note are null.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "parse_citations() in server.py (line 1024)",
+        "issue": "SOURCES_RE = r'(?:\\*\\*)?SOURCES:?\\*?\\*?\\s*(.+?)(?:\\n\\n|\\Z)' terminates the SOURCES block at the FIRST blank line. Claude's natural output separates each labeled entry with a blank line:\\n\\n  **SOURCES:**\\n\\n  Act/Standard: Income Tax Act, 1961\\n\\n  Section/Para: Section 44AD\\n\\n  Note: Presumptive taxation scheme...\\n\\nResult: only 'Act/Standard: Income Tax Act, 1961' is captured; grouping never sees the Section/Para or Note lines. citation[0] = {act:'Income Tax Act, 1961', section:null, note:null}. All 4 unit tests with contiguous multiline labeled input pass, but real Claude output does not. Fix: broaden SOURCES_RE to consume until end-of-text OR a non-labeled paragraph (or two consecutive blank lines), then let the grouping loop handle blank-line-separated labeled entries."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase3_fixes.py",
+    "/app/test_reports/pytest/phase3_redo_partial.xml",
+    "/app/test_reports/pytest/phase3_redo_fix1.xml"
+  ],
+  "action_items": [
+    "P1 — Extend SOURCES_RE to consume until the next non-labeled paragraph (or EOT), not until the first '\\n\\n'. Concrete suggestion: match SOURCES header, then greedily consume any run of blank-lines + labeled-lines. E.g. capture group '(.+?)(?:\\n\\n(?![A-Z][^\\n]*[:\\-])|\\Z)' or drop the '\\n\\n' terminator entirely and let the grouping loop already added to parse_citations() handle empty lines correctly (it already filters empty lines via '[ln for ln in ... if ln]'). Add a self-test sample using the literal Claude output captured above."
+  ],
+  "critical_code_review_comments": [
+    "SOURCES_RE terminates on the first blank line; combined with Claude's real-world blank-line-per-entry formatting, this defeats the multi-line grouping pass. The grouping logic is correct in isolation — the regex boundary is the actual issue.",
+    "server.py: on_event('startup'/'shutdown') still deprecated — flagged in prior iterations, not blocking.",
+    "_run_plan_job stores jobs in in-memory _PLAN_JOBS dict. If uvicorn is restarted mid-job, the client polling will get 404 after restart. Consider persisting job state to Mongo (or accept this trade-off for the current scale)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase3_fixes.py — rewritten study-plan test class to poll async job (test_1a_generate_returns_immediately_with_job_id, test_1b_status_returns_401_without_auth, test_1b2_status_404_for_other_user_job, test_1c_active_matches_and_archives_prior); added 4 new FIX 2 tests including multi-line grouped unit tests and 2 live-chat prompts (multiline labeled + compact form)"
+  ],
+  "success_rate": {"backend": "92% (12/13 targeted tests)", "frontend": "100% — full async-job UX including pulsing dots, live progress text, plan render"},
+  "test_credentials": "demo@cagrid.in / demo123 (from /app/memory/test_credentials.md); TEST_other_* signup used for cross-user leak test",
+  "seed_data_creation": "None — 1 real study plan generated via pytest (~90s Claude), 1 via frontend UI test (~66s Claude). The frontend one is now active; localhost/pytest plans archived by the frontend regenerate.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "12/13 verified: FIX 1 async-job pattern is SOLID — generate returns immediately, poll transitions correctly, cross-user 404 leak protection works, /active updates & prior archived, 4-min ceiling not hit (real time ~85-90s), frontend polling UX pixel-perfect with pulsing dots. FIX 2 remaining gap: SOURCES_RE regex terminates at first blank line so Claude's blank-line-separated labeled entries only yield citation[0].act with null section/note. Unit tests confirm the grouping loop IS correct — only the regex boundary needs widening. FIX 2b/3/4 fully green. To verify the FIX 2 patch, re-run pytest tests/test_phase3_fixes.py::TestFix2CitationsHardened — the live prompts consume ~2-3k Claude tokens each so run once. Do NOT rerun test_1a more than once per 2 min — each run burns ~4-6k Claude tokens.",
+  "rca of the issue": "FIX 2 live regression RCA: server.py line 1024 defines SOURCES_RE = re.compile(r'(?:\\*\\*)?SOURCES:?\\*?\\*?\\s*(.+?)(?:\\n\\n|\\Z)', re.DOTALL|re.IGNORECASE). The '(?:\\n\\n|\\Z)' terminator stops the SOURCES capture at the FIRST occurrence of two consecutive newlines. Claude's actual natural output for the multi-line labeled prompt requested by review:\\n\\n**SOURCES:**\\n\\nAct/Standard: Income Tax Act, 1961\\n\\nSection/Para: Section 44AD\\n\\nNote: Presumptive taxation scheme for small businesses with turnover up to ₹2 crore; deemed profit of 6% (cash) or 8% (digital receipts)\\n\\nWith this input, m.group(1) becomes just 'Act/Standard: Income Tax Act, 1961' — the Section/Para and Note lines are OUTSIDE the capture. The grouping loop then processes only the single Act line and yields citation[0]={act:'Income Tax Act, 1961', section:null, note:null}. The internal grouping and label-stripping logic is correct — it works perfectly when the same lines are contiguous (proven by 4 passing unit tests). Fix: change the SOURCES_RE terminator so it does not stop at blank lines that are followed by labeled lines. Simplest patch: replace terminator with a look-ahead that requires TWO blank lines OR a non-labeled paragraph boundary, e.g. '(?=\\n\\n\\n|\\n\\n[^A-Z\\-\\*•]|\\Z)'. Or drop the blank-line terminator entirely and rely on the fact that Claude usually places SOURCES at the very end of its response (i.e., '(.+?)\\Z'). Verified by running the exact captured text through parse_citations() — MATCH GROUP1 == 'Act/Standard: Income Tax Act, 1961' confirms the regex boundary is the sole cause of the failure."
+}

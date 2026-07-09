@@ -28,27 +28,39 @@ export default function StudyPlan() {
   const generate = async () => {
     setBusy(true);
     setError("");
-    setStatus("opening…");
+    setStatus("queued…");
     try {
-      let plan = null;
-      for await (const ev of streamSSE("/study-plan/generate", {
+      const r = await api.post("/study-plan/generate", {
         exam_date: examDate,
         daily_hours: dailyHours,
         weak_areas: weakAreas,
-      })) {
-        if (ev.type === "start") setStatus("drafting…");
-        else if (ev.type === "progress") setStatus(ev.message || "working…");
-        else if (ev.type === "done") plan = ev.plan;
-        else if (ev.type === "error") { setError(ev.error || "Generation failed"); break; }
+      });
+      const jobId = r.data.job_id;
+      // Poll every 2s
+      const started = Date.now();
+      const maxMs = 240000; // 4 min ceiling
+      while (Date.now() - started < maxMs) {
+        await new Promise((res) => setTimeout(res, 2000));
+        try {
+          const s = await api.get(`/study-plan/status/${jobId}`);
+          if (s.data.progress) setStatus(s.data.progress);
+          if (s.data.status === "done") {
+            setExisting(s.data.plan);
+            setShowForm(false);
+            return;
+          }
+          if (s.data.status === "error") {
+            setError(s.data.error || "Generation failed");
+            return;
+          }
+        } catch (e) {
+          setError(e?.response?.data?.detail || e?.message || "Poll failed");
+          return;
+        }
       }
-      if (plan) {
-        setExisting(plan);
-        setShowForm(false);
-      } else if (!error) {
-        setError("No plan returned");
-      }
+      setError("Timed out — try a shorter plan.");
     } catch (e) {
-      setError(e?.message || "Generation failed");
+      setError(e?.response?.data?.detail || e?.message || "Generation failed");
     } finally {
       setBusy(false);
       setStatus("");

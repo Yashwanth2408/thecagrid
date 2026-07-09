@@ -1059,26 +1059,48 @@ def _parse_compact(line: str):
 
 def parse_citations(text: str) -> list:
     """Extract structured citations from a SOURCES block.
-    Handles labeled form (Act/Standard: X; Section: Y; Note: Z), compact form (Act — §Sec [Note]),
-    and short form (Act, Section X (Note)). Falls back to putting the whole line into 'act'.
+    Groups multi-line labeled entries (Act/Standard: on line 1, Section/Para: on line 2, ...)
+    into a single citation, then handles labeled / compact / short forms.
     """
     m = SOURCES_RE.search(text or "")
     if not m:
         return []
+
+    def _clean(s: str) -> str:
+        s = s.strip().lstrip("-•· ").strip()
+        return re.sub(r"[*_`]+", "", s).strip()
+
+    label_re = re.compile(
+        r"^(Act/Standard|Act|Standard|Circular|Section/Para|Section|Para|§|Note)\s*[:\-]",
+        re.IGNORECASE,
+    )
+    new_group_re = re.compile(r"^(Act/Standard|Act|Standard|Circular)\s*[:\-]", re.IGNORECASE)
+
+    lines = [ln for ln in (_clean(l) for l in m.group(1).splitlines()) if ln]
+    grouped: List[str] = []
+    cur = ""
+    for line in lines:
+        if new_group_re.match(line):
+            if cur:
+                grouped.append(cur)
+            cur = line
+        elif label_re.match(line) and cur:
+            cur = f"{cur}; {line}"
+        else:
+            if cur:
+                grouped.append(cur)
+                cur = ""
+            grouped.append(line)
+    if cur:
+        grouped.append(cur)
+
     out = []
-    for raw in m.group(1).splitlines():
-        line = raw.strip().lstrip("-•· ").strip()
-        # Strip markdown bold/italic markers that LLM sometimes emits
-        line = re.sub(r"\*\*|\*|__|`", "", line).strip()
-        if not line or line.lower().startswith(("sources", "source:")):
+    for line in grouped:
+        if line.lower().startswith(("sources", "source:")):
             continue
         parsed = _parse_labeled(line) or _parse_compact(line)
-        if parsed:
-            out.append({
-                "act": parsed.get("act"),
-                "section": parsed.get("section"),
-                "note": parsed.get("note"),
-            })
+        if parsed and parsed.get("act"):
+            out.append({"act": parsed.get("act"), "section": parsed.get("section"), "note": parsed.get("note")})
         else:
             out.append({"act": line, "section": None, "note": None})
     return out
@@ -1095,6 +1117,8 @@ def _selftest_citations():
          {"act": "Income Tax Act, 1961", "section": "44AD", "note": "presumptive taxation"}),
         ("SOURCES:\n- Ind AS 115, Section 22-30",
          {"act": "Ind AS 115", "section": "22-30", "note": None}),
+        ("SOURCES:\n**Act/Standard:** Income Tax Act, 1961\n**Section/Para:** Section 44AD\n**Note:** presumptive for eligible businesses",
+         {"act": "Income Tax Act, 1961", "section": "Section 44AD", "note": "presumptive for eligible businesses"}),
     ]
     for txt, expected in samples:
         got = parse_citations(txt)
@@ -1414,12 +1438,112 @@ async def _study_plan_stream(user_id: str, exam_date: str, daily_hours: float, w
 
 @api_router.post("/study-plan/generate")
 async def study_plan_generate(body: StudyPlanBody, request: Request):
+    """Kick off a study-plan generation job. Returns immediately with {job_id}.
+    Client polls GET /study-plan/status/{job_id} every ~2s until status=done|error.
+    Avoids k8s ingress ~60s timeout on long streaming responses.
+    """
     user = await require_user(request)
-    return StreamingResponse(
-        _sse_wrap(_study_plan_stream(user["user_id"], body.exam_date, body.daily_hours, body.weak_areas)),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
-    )
+    _cleanup_plan_jobs()
+    job_id = f"pjob_{uuid.uuid4().hex[:14]}"
+    _PLAN_JOBS[job_id] = {
+        "job_id": job_id, "user_id": user["user_id"],
+        "status": "pending", "progress": "queued",
+        "created_at": now_utc(),
+    }
+    asyncio.create_task(_run_plan_job(job_id, user["user_id"], body.exam_date, body.daily_hours, body.weak_areas))
+    return {"job_id": job_id, "status": "pending"}
+
+
+@api_router.get("/study-plan/status/{job_id}")
+async def study_plan_status(job_id: str, request: Request):
+    user = await require_user(request)
+    j = _PLAN_JOBS.get(job_id)
+    if not j or j.get("user_id") != user["user_id"]:
+        raise HTTPException(404, "Job not found")
+    return {
+        "job_id": j["job_id"],
+        "status": j.get("status"),
+        "progress": j.get("progress"),
+        "error": j.get("error"),
+        "plan": j.get("plan"),
+    }
+
+
+# In-memory jobs + worker
+_PLAN_JOBS: dict = {}
+PLAN_JOB_TTL_MIN = 30
+
+
+def _cleanup_plan_jobs():
+    cutoff = now_utc() - timedelta(minutes=PLAN_JOB_TTL_MIN)
+    for k, v in list(_PLAN_JOBS.items()):
+        if v.get("created_at") and v["created_at"] < cutoff:
+            _PLAN_JOBS.pop(k, None)
+
+
+async def _run_plan_job(job_id: str, user_id: str, exam_date: str, daily_hours: float, weak_areas: List[str]):
+    try:
+        try:
+            exam_dt = datetime.strptime(exam_date, "%Y-%m-%d").date()
+        except ValueError:
+            _PLAN_JOBS[job_id] = {**_PLAN_JOBS[job_id], "status": "error", "error": "exam_date must be YYYY-MM-DD"}
+            return
+        days_until = max(1, (exam_dt - now_ist().date()).days)
+        ctx = await build_user_ctx(user_id)
+        _PLAN_JOBS[job_id] = {**_PLAN_JOBS[job_id], "progress": "drafting the strategy…"}
+
+        prompt = build_study_plan_prompt(ctx, exam_date, days_until, daily_hours, weak_areas)
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"plan_{uuid.uuid4().hex[:10]}",
+            system_message="You produce concise, valid JSON study plans. Output ONLY JSON, no prose.",
+        ).with_model(*MENTOR_MODEL)
+
+        chunks: list = []
+        async for ev in chat.stream_message(UserMessage(text=prompt)):
+            if isinstance(ev, TextDelta):
+                chunks.append(ev.content)
+                if len(chunks) % 20 == 0:
+                    _PLAN_JOBS[job_id] = {**_PLAN_JOBS[job_id], "progress": f"generating… ({sum(len(c) for c in chunks)} chars)"}
+            elif isinstance(ev, StreamDone):
+                break
+
+        text = "".join(chunks).strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        try:
+            plan_json = _json.loads(text)
+        except Exception:
+            m = re.search(r"\{[\s\S]*\}", text)
+            if m:
+                try:
+                    plan_json = _json.loads(m.group(0))
+                except Exception as e:
+                    _PLAN_JOBS[job_id] = {**_PLAN_JOBS[job_id], "status": "error", "error": f"LLM returned non-JSON: {e}"}
+                    return
+            else:
+                _PLAN_JOBS[job_id] = {**_PLAN_JOBS[job_id], "status": "error", "error": "LLM returned non-JSON"}
+                return
+
+        plan_id = f"plan_{uuid.uuid4().hex[:14]}"
+        await db.study_plans.update_many(
+            {"user_id": user_id, "status": "active"},
+            {"$set": {"status": "archived"}},
+        )
+        doc = {
+            "plan_id": plan_id, "user_id": user_id,
+            "exam_date": exam_date, "daily_hours": daily_hours,
+            "weak_areas": weak_areas, "plan_json": plan_json,
+            "created_at": now_utc(), "status": "active",
+        }
+        await db.study_plans.insert_one(doc)
+        plan_out = {k: v for k, v in doc.items() if k != "_id"}
+        plan_out["created_at"] = plan_out["created_at"].isoformat()
+        _PLAN_JOBS[job_id] = {**_PLAN_JOBS[job_id], "status": "done", "plan": plan_out, "progress": "done"}
+    except Exception as e:
+        logger.exception("plan job failed")
+        _PLAN_JOBS[job_id] = {**_PLAN_JOBS[job_id], "status": "error", "error": str(e)}
 
 
 @api_router.get("/study-plan/active")

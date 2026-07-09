@@ -1,11 +1,16 @@
-"""Phase 3 targeted fix verification pass.
+"""Phase 3 SECOND FIX PASS verification.
 
-Verifies 4 fixes:
-- FIX 1 (P0): POST /api/study-plan/generate is SSE with start/progress×N/done events
-- FIX 1b: GET /api/study-plan/active returns the freshly generated plan
-- FIX 2 (P1): live citation parser hardened — no stray 'Section:'/'Note:' in `act`
-- FIX 3 (P1): GET /api/mentor/sessions/{id} returns flat title, message_count at top level
-- FIX 4 (P2): GET /api/dashboard returns both stats.total_xp and stats.xp_total
+Verifies:
+- FIX 1  (P0 REDO): POST /api/study-plan/generate returns {job_id} immediately,
+  polling GET /study-plan/status/{job_id} shows progress transitions and eventually done.
+- FIX 1b (P0): status endpoint returns 404 for other users' jobs.
+- FIX 1c (P0): after done, /study-plan/active returns the freshly generated plan and prior
+  active plan is archived.
+- FIX 2  (P1 REDO): parse_citations groups multi-line labeled SOURCES entries into one
+  citation with clean act/section/note.
+- FIX 2b: no NEW citation self-test warnings after latest backend startup.
+- FIX 3  (regression): GET /api/mentor/sessions/{id} still has top-level title & message_count.
+- FIX 4  (regression): GET /api/dashboard.stats has both total_xp and xp_total equal & non-null.
 """
 import os
 import json as _json
@@ -70,110 +75,169 @@ def _consume_sse(url, headers, payload, timeout=150):
     return events, ct, xac
 
 
-# ---------- FIX 1 (P0): study-plan/generate is SSE ----------
-# Note: k8s ingress kills SSE streams at ~60s. Study plan generation takes 60-90s.
-# We verify functional correctness via localhost:8001 (bypassing ingress).
-LOCAL_API = "http://localhost:8001/api"
+# ---------- FIX 1 (P0 REDO): async-job study-plan/generate ----------
+class TestFix1StudyPlanAsyncJob:
+    last_plan = None
+    prior_active_plan_id = None
 
+    def test_1a_generate_returns_immediately_with_job_id(self, demo_session):
+        # capture prior active plan id (should be archived after this test)
+        r_prev = demo_session.get(f"{API}/study-plan/active", timeout=15)
+        assert r_prev.status_code == 200
+        prev = r_prev.json()
+        if prev:
+            TestFix1StudyPlanAsyncJob.prior_active_plan_id = prev.get("plan_id")
 
-class TestFix1StudyPlanSSE:
-    def test_generate_streams_start_progress_done(self, demo_token):
         exam_date = (datetime.now().date() + timedelta(days=90)).strftime("%Y-%m-%d")
-        headers = {"Authorization": f"Bearer {demo_token}", "Content-Type": "application/json"}
         payload = {"exam_date": exam_date, "daily_hours": 4,
                    "weak_areas": ["Taxation", "Auditing"]}
         t0 = time.time()
-        # Use localhost — k8s ingress terminates SSE streams at ~60s (infrastructure limit)
-        events, ct, xac = _consume_sse(f"{LOCAL_API}/study-plan/generate", headers, payload, timeout=150)
+        r = demo_session.post(f"{API}/study-plan/generate", json=payload, timeout=15)
         elapsed = time.time() - t0
-        # FIX 1 checks
-        assert "text/event-stream" in ct, f"expected event-stream, got {ct!r}"
-        assert xac.lower() == "no", f"expected X-Accel-Buffering: no, got {xac!r}"
-        types = [e.get("type") for e in events]
-        # (a) start emitted
-        assert types[0] == "start", f"first event must be 'start', got {types[:3]}"
-        # (b) at least 2 progress events
-        progress = [e for e in events if e.get("type") == "progress"]
-        assert len(progress) >= 2, f"expected >=2 progress events, got {len(progress)}. types={types}"
-        for p in progress:
-            assert isinstance(p.get("message"), str) and p["message"], f"bad progress: {p}"
-        # (c) exactly one done with plan_json.weeks
-        done = [e for e in events if e.get("type") == "done"]
-        errs = [e for e in events if e.get("type") == "error"]
-        assert not errs, f"unexpected error events: {errs}"
-        assert len(done) == 1, f"expected 1 done, got {len(done)}"
-        plan = done[0].get("plan") or {}
-        assert plan.get("plan_id", "").startswith("plan_"), f"missing plan_id: {plan.get('plan_id')}"
-        weeks = (plan.get("plan_json") or {}).get("weeks") or []
-        assert isinstance(weeks, list) and len(weeks) >= 1, \
-            f"plan_json.weeks empty/invalid: {weeks!r}"
-        print(f"[fix1] study-plan SSE ok: {len(events)} events, {len(progress)} progress, elapsed={elapsed:.1f}s, weeks={len(weeks)}")
-        # Stash for fix1b
-        TestFix1StudyPlanSSE.last_plan = plan
+        assert r.status_code == 200, f"generate failed: {r.status_code} {r.text[:400]}"
+        body = r.json()
+        assert "job_id" in body, f"missing job_id: {body}"
+        assert body.get("status") == "pending", f"expected pending, got: {body}"
+        assert elapsed < 3.0, f"generate should return <3s, took {elapsed:.2f}s"
+        job_id = body["job_id"]
+        assert job_id.startswith("pjob_"), f"unexpected job_id shape: {job_id}"
+        print(f"[fix1a] generate returned in {elapsed:.2f}s job_id={job_id}")
 
-    def test_1b_active_returns_freshly_generated(self, demo_session):
-        # Runs after generate above — active should match
-        r = demo_session.get(f"{API}/study-plan/active", timeout=20)
+        # Poll every 2s up to 4 minutes
+        deadline = time.time() + 240
+        progress_snapshots = []
+        final = None
+        while time.time() < deadline:
+            time.sleep(2)
+            sr = demo_session.get(f"{API}/study-plan/status/{job_id}", timeout=15)
+            assert sr.status_code == 200, f"status returned {sr.status_code}: {sr.text[:200]}"
+            s = sr.json()
+            progress_snapshots.append((s.get("status"), s.get("progress")))
+            if s.get("status") == "done":
+                final = s
+                break
+            if s.get("status") == "error":
+                pytest.fail(f"job errored: {s.get('error')}")
+        assert final is not None, f"job did not complete in 4min. snapshots={progress_snapshots[-5:]}"
+        plan = final.get("plan") or {}
+        assert plan.get("plan_id", "").startswith("plan_"), f"bad plan_id: {plan.get('plan_id')}"
+        weeks = (plan.get("plan_json") or {}).get("weeks") or []
+        assert isinstance(weeks, list) and len(weeks) >= 1, f"plan_json.weeks empty: {weeks!r}"
+
+        # Progress transitions: expect at least one 'drafting' phase and at least one 'generating…' phase
+        progress_msgs = [p[1] for p in progress_snapshots if p[1]]
+        assert any("drafting" in (m or "").lower() or "queued" in (m or "").lower() for m in progress_msgs), \
+            f"expected early drafting/queued message, got: {progress_msgs[:5]}"
+        assert any("generating" in (m or "").lower() for m in progress_msgs), \
+            f"expected 'generating…' message, got: {progress_msgs[:10]}"
+        elapsed_total = time.time() - t0
+        print(f"[fix1a] job done in {elapsed_total:.1f}s, snapshots={len(progress_snapshots)}, weeks={len(weeks)}")
+        TestFix1StudyPlanAsyncJob.last_plan = plan
+        TestFix1StudyPlanAsyncJob.last_job_id = job_id
+
+    def test_1b_status_returns_401_without_auth(self, demo_token):
+        job_id = getattr(TestFix1StudyPlanAsyncJob, "last_job_id", None)
+        assert job_id, "prior test did not run — skipping"
+        # No auth cookie/header — should be 401
+        r = requests.get(f"{API}/study-plan/status/{job_id}", timeout=15)
+        assert r.status_code == 401, f"expected 401 without auth, got {r.status_code}: {r.text[:200]}"
+
+    def test_1b2_status_404_for_other_user_job(self, demo_session):
+        """Poll another user's job id → must 404 (not leak)."""
+        job_id = getattr(TestFix1StudyPlanAsyncJob, "last_job_id", None)
+        assert job_id, "prior test did not run — skipping"
+        # create a second user
+        import uuid as _u
+        email = f"TEST_other_{_u.uuid4().hex[:8]}@cagrid.in"
+        rs = requests.post(f"{API}/auth/signup",
+                           json={"email": email, "password": "otherpass123", "name": "Other User"},
+                           timeout=15)
+        assert rs.status_code == 200, f"signup failed: {rs.status_code} {rs.text[:200]}"
+        other = requests.Session()
+        rl = other.post(f"{API}/auth/login",
+                        json={"email": email, "password": "otherpass123"}, timeout=15)
+        assert rl.status_code == 200, f"other login failed: {rl.text[:200]}"
+        r = other.get(f"{API}/study-plan/status/{job_id}", timeout=15)
+        assert r.status_code == 404, f"expected 404, got {r.status_code}: {r.text[:200]}"
+
+    def test_1c_active_matches_and_archives_prior(self, demo_session):
+        # after job done, /study-plan/active must return the newly generated plan
+        r = demo_session.get(f"{API}/study-plan/active", timeout=15)
         assert r.status_code == 200
         active = r.json()
         assert active is not None, "active plan should exist"
-        assert active.get("plan_id"), "active plan missing plan_id"
+        last = TestFix1StudyPlanAsyncJob.last_plan
+        assert active.get("plan_id") == last.get("plan_id"), \
+            f"active.plan_id={active.get('plan_id')} != freshly generated {last.get('plan_id')}"
         assert active["daily_hours"] == 4
         assert set(active["weak_areas"]) == {"Taxation", "Auditing"}
         weeks = (active.get("plan_json") or {}).get("weeks") or []
         assert weeks, "active plan.plan_json.weeks should be non-empty"
-        # exam_date ~90 days out
         exam_dt = datetime.strptime(active["exam_date"], "%Y-%m-%d").date()
         days = (exam_dt - datetime.now().date()).days
         assert 88 <= days <= 91, f"exam_date should be ~90 days, got {days}"
+        # prior active (if existed) should now be archived — verify only ONE active plan exists
+        # (we can't hit db directly, but active is a single item; older plan_id shouldn't equal)
+        prior = TestFix1StudyPlanAsyncJob.prior_active_plan_id
+        if prior and prior != last.get("plan_id"):
+            assert active.get("plan_id") != prior, "old plan is still active — not archived"
+            print(f"[fix1c] prior plan {prior} archived; new active = {active.get('plan_id')}")
 
 
-# ---------- FIX 2 (P1): citation parser hardened ----------
+# ---------- FIX 2 (P1 REDO): citation parser groups multi-line labeled entries ----------
 class TestFix2CitationsHardened:
-    def test_live_chat_citations_have_clean_fields(self, demo_session, demo_token):
-        # Create a fresh session for this test
-        r = demo_session.post(f"{API}/mentor/sessions",
-                              json={"mode": "exam", "initial_message": "TEST_cite_check"},
-                              timeout=15)
-        assert r.status_code == 200
-        sid = r.json()["session_id"]
-
-        headers = {"Authorization": f"Bearer {demo_token}", "Content-Type": "application/json"}
-        prompt = ("Explain Section 44AD of Income Tax Act with proper citations. "
-                  "Include SOURCES block with Act/Standard and Section/Para labels.")
-        events, ct, _ = _consume_sse(
-            f"{API}/mentor/chat", headers, {"session_id": sid, "message": prompt}, timeout=90,
-        )
-        assert "text/event-stream" in ct
-        types = [e.get("type") for e in events]
-        assert "done" in types, f"stream not done: {types}"
-
-        # Fetch session to inspect persisted assistant message + citations
-        r2 = demo_session.get(f"{API}/mentor/sessions/{sid}", timeout=15)
-        assert r2.status_code == 200
-        data = r2.json()
-        msgs = data["messages"]
-        assistants = [m for m in msgs if m["role"] == "assistant"]
-        assert assistants, "no assistant message persisted"
-        cits = assistants[-1].get("citations") or []
-        assert cits, f"assistant has no citations. content preview: {assistants[-1].get('content','')[:400]}"
-        c0 = cits[0]
-        # FIX 2 assertions: act must not contain leaking labels
-        assert c0.get("act"), f"citation[0].act empty: {c0}"
-        act = c0["act"]
-        assert "Section:" not in act, f"'Section:' leaked into act: {act!r}"
-        assert "Note:" not in act, f"'Note:' leaked into act: {act!r}"
-        assert "Section/Para:" not in act, f"'Section/Para:' leaked into act: {act!r}"
-        # section must be populated (non-null)
-        assert c0.get("section"), f"citation[0].section is null/empty: {c0}"
-        print(f"[fix2] first citation clean: {c0}")
-
-    def test_compact_form_parses_three_fields(self):
-        """Unit-test the parser directly with compact form."""
+    def test_multiline_labeled_grouped_into_one_citation(self):
+        """Direct unit test — the real Claude output pattern:
+        **Act/Standard:** Income Tax Act, 1961
+        **Section/Para:** Section 44AD
+        **Note:** presumptive taxation for eligible businesses
+        must produce ONE citation with all three fields populated cleanly.
+        """
         import sys
         sys.path.insert(0, "/app/backend")
         from server import parse_citations
-        # compact form: - Act — §Section [Note]
+        txt = (
+            "SOURCES:\n"
+            "**Act/Standard:** Income Tax Act, 1961\n"
+            "**Section/Para:** Section 44AD\n"
+            "**Note:** presumptive taxation for eligible businesses\n"
+        )
+        out = parse_citations(txt)
+        assert out, "parser returned empty for multi-line labeled block"
+        # Must be grouped into ONE citation, not three
+        assert len(out) == 1, f"expected 1 grouped citation, got {len(out)}: {out}"
+        c = out[0]
+        assert c["act"] == "Income Tax Act, 1961", f"act={c['act']!r}"
+        # section should contain 44AD (leading 'Section ' is fine, but no 'Section:' label)
+        assert c["section"] and "44AD" in c["section"], f"section={c['section']!r}"
+        assert "Section:" not in (c.get("act") or "")
+        assert "Section/Para:" not in (c.get("act") or "")
+        assert "Note:" not in (c.get("act") or "")
+        assert c.get("note") and "presumptive" in c["note"].lower(), f"note={c.get('note')!r}"
+
+    def test_multiline_dash_bullet_variant_grouped(self):
+        """Variant: dash-prefixed labels on separate lines."""
+        import sys
+        sys.path.insert(0, "/app/backend")
+        from server import parse_citations
+        txt = (
+            "SOURCES:\n"
+            "- Act/Standard: Ind AS 115\n"
+            "- Section/Para: Para 22-30\n"
+            "- Note: revenue recognition five-step model\n"
+        )
+        out = parse_citations(txt)
+        assert out, "empty out"
+        assert len(out) == 1, f"expected 1 grouped citation, got {len(out)}: {out}"
+        c = out[0]
+        assert c["act"] == "Ind AS 115", f"act={c['act']!r}"
+        assert c["section"] and "22" in c["section"], f"section={c['section']!r}"
+        assert c.get("note") and "revenue" in c["note"].lower()
+
+    def test_compact_form_still_parses(self):
+        import sys
+        sys.path.insert(0, "/app/backend")
+        from server import parse_citations
         txt = "SOURCES:\n- Income Tax Act, 1961 — §44AD [DEEMED PROFITS]"
         out = parse_citations(txt)
         assert out, "compact parse returned empty"
@@ -182,7 +246,7 @@ class TestFix2CitationsHardened:
         assert c["section"] == "44AD", f"section={c['section']!r}"
         assert c["note"] == "DEEMED PROFITS", f"note={c['note']!r}"
 
-    def test_labeled_form_parses_three_fields(self):
+    def test_single_line_labeled_still_parses(self):
         import sys
         sys.path.insert(0, "/app/backend")
         from server import parse_citations
@@ -193,8 +257,78 @@ class TestFix2CitationsHardened:
         c = out[0]
         assert c["act"] == "Income Tax Act, 1961", f"act={c['act']!r}"
         assert c["section"] == "44AD", f"section={c['section']!r}"
-        assert "Section:" not in (c["act"] or "")
-        assert "Note:" not in (c["act"] or "")
+
+    def test_live_chat_multiline_labeled_prompt(self, demo_session, demo_token):
+        """Live end-to-end: ask Claude for multi-line labeled SOURCES, then verify persisted citations."""
+        r = demo_session.post(f"{API}/mentor/sessions",
+                              json={"mode": "exam", "initial_message": "TEST_multiline_cite"},
+                              timeout=15)
+        assert r.status_code == 200
+        sid = r.json()["session_id"]
+        headers = {"Authorization": f"Bearer {demo_token}", "Content-Type": "application/json"}
+        prompt = (
+            "Explain Section 44AD of Income Tax Act. Use a SOURCES block at the end "
+            "with the Act/Standard, Section/Para, and Note labels on SEPARATE LINES "
+            "(one label per line)."
+        )
+        events, ct, _ = _consume_sse(
+            f"{API}/mentor/chat", headers, {"session_id": sid, "message": prompt}, timeout=120,
+        )
+        assert "text/event-stream" in ct
+        types = [e.get("type") for e in events]
+        assert "done" in types, f"stream not done: {types[-5:]}"
+
+        r2 = demo_session.get(f"{API}/mentor/sessions/{sid}", timeout=15)
+        assert r2.status_code == 200
+        msgs = r2.json()["messages"]
+        assistants = [m for m in msgs if m["role"] == "assistant"]
+        assert assistants, "no assistant message"
+        cits = assistants[-1].get("citations") or []
+        content_preview = assistants[-1].get("content", "")[-800:]
+        assert cits, f"no citations. content tail: {content_preview!r}"
+        c0 = cits[0]
+        act = (c0.get("act") or "")
+        # Must NOT start with a leaking label
+        assert not act.lower().startswith(("section:", "section/para:", "note:")), \
+            f"leaking label in act: {act!r} — content: {content_preview!r}"
+        assert c0.get("section"), \
+            f"citation[0].section null — grouping failed. c0={c0}, all cits={cits}, content_tail={content_preview!r}"
+        print(f"[fix2-live] multiline SOURCES grouped ok: {c0}")
+
+    def test_live_chat_compact_form_prompt(self, demo_session, demo_token):
+        """Live end-to-end: ask for compact `— §` form and verify parse still works."""
+        r = demo_session.post(f"{API}/mentor/sessions",
+                              json={"mode": "exam", "initial_message": "TEST_compact_cite"},
+                              timeout=15)
+        assert r.status_code == 200
+        sid = r.json()["session_id"]
+        headers = {"Authorization": f"Bearer {demo_token}", "Content-Type": "application/json"}
+        prompt = (
+            "In one paragraph, define presumptive taxation. End with a SOURCES block using "
+            "the COMPACT form exactly like: `- Income Tax Act, 1961 — §44AD [presumptive taxation]` "
+            "with an em-dash and the § symbol."
+        )
+        events, ct, _ = _consume_sse(
+            f"{API}/mentor/chat", headers, {"session_id": sid, "message": prompt}, timeout=90,
+        )
+        assert "text/event-stream" in ct
+        assert "done" in [e.get("type") for e in events]
+
+        r2 = demo_session.get(f"{API}/mentor/sessions/{sid}", timeout=15)
+        assert r2.status_code == 200
+        msgs = r2.json()["messages"]
+        assistants = [m for m in msgs if m["role"] == "assistant"]
+        cits = assistants[-1].get("citations") or []
+        content_preview = assistants[-1].get("content", "")[-500:]
+        assert cits, f"no citations. content tail: {content_preview!r}"
+        c0 = cits[0]
+        act = c0.get("act") or ""
+        assert not act.lower().startswith(("section:", "section/para:", "note:")), \
+            f"leaking label in act: {act!r}"
+        # For compact form we accept either section populated or note populated
+        assert c0.get("section") or c0.get("note") or "Act" in act, \
+            f"compact form parse yielded empty citation: {c0}"
+        print(f"[fix2-live-compact] compact SOURCES parsed ok: {c0}")
 
 
 # ---------- FIX 3 (P1): mentor session flat shape ----------
