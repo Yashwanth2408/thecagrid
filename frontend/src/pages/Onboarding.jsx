@@ -1,30 +1,19 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, useInView } from "framer-motion";
 import confetti from "canvas-confetti";
-import {
-  Sparkles,
-  ArrowRight,
-  ArrowLeft,
-  Search,
-  BookOpen,
-  Briefcase,
-  Trophy,
-  GraduationCap,
-  Compass,
-  Check,
-} from "lucide-react";
 import Logo from "@/components/Logo";
+import GridBackground from "@/components/GridBackground";
 import { api } from "@/lib/apiClient";
 import { useAuth } from "@/context/AuthContext";
 
 const LEVELS = [
-  { key: "Aspiring", label: "Aspiring", desc: "Exploring whether CA is for you.", icon: Compass },
-  { key: "Foundation", label: "Foundation", desc: "Level 1 — building the base.", icon: BookOpen },
-  { key: "Intermediate", label: "Intermediate", desc: "Level 2 — the real grind starts.", icon: GraduationCap },
-  { key: "Articleship", label: "Articleship", desc: "In the trenches, learning by doing.", icon: Briefcase },
-  { key: "Final", label: "Final", desc: "The last mountain — CA Final.", icon: Search },
-  { key: "Qualified", label: "Qualified CA", desc: "Practising or in industry.", icon: Trophy },
+  { key: "Aspiring", label: "Aspiring", desc: "Exploring whether CA is for you." },
+  { key: "Foundation", label: "Foundation", desc: "Level 01 — building the base." },
+  { key: "Intermediate", label: "Intermediate", desc: "Level 02 — the real grind." },
+  { key: "Articleship", label: "Articleship", desc: "In the trenches. Learning by doing." },
+  { key: "Final", label: "Final", desc: "The last mountain — CA Final." },
+  { key: "Qualified", label: "Qualified CA", desc: "Practising or in industry." },
 ];
 
 const SUBJECTS_BY_LEVEL = {
@@ -56,7 +45,7 @@ const QUIZ = [
     ],
   },
   {
-    q: "How do you feel about reading long legal/regulatory text?",
+    q: "How do you feel about reading long legal or regulatory text?",
     options: [
       { t: "I find it interesting.", w: 20 },
       { t: "Fine if the topic is useful.", w: 14 },
@@ -74,7 +63,7 @@ const QUIZ = [
     ],
   },
   {
-    q: "Motivation to become a CA?",
+    q: "Your primary motivation to become a CA?",
     options: [
       { t: "Strong intrinsic pull.", w: 10 },
       { t: "Career and stability driven.", w: 7 },
@@ -85,14 +74,13 @@ const QUIZ = [
 ];
 
 function computeFit(scores) {
-  const total = scores.reduce((a, b) => a + b, 0); // max ~ 100
-  const band =
-    total <= 40 ? "explore" : total <= 70 ? "potential" : "natural";
+  const total = scores.reduce((a, b) => a + b, 0);
+  const band = total <= 40 ? "explore" : total <= 70 ? "potential" : "natural";
   const roadmaps = {
     explore: [
-      "Do a 2-week ‘taste test’: 30 min/day of Foundation Accounting fundamentals.",
+      "Do a 2-week 'taste test': 30 min/day of Foundation Accounting fundamentals.",
       "Shadow a CA aspirant or article for a day — see the real routine.",
-      "Revisit motivation. If it still pulls, register for CPT/Foundation next cycle.",
+      "Revisit motivation. If it still pulls, register for CPT / Foundation next cycle.",
     ],
     potential: [
       "Register for CA Foundation and commit to a 12-week focused block.",
@@ -100,35 +88,147 @@ function computeFit(scores) {
       "Pick a mentor or study partner at your level within 2 weeks.",
     ],
     natural: [
-      "You’re wired for this. Register for Foundation and target the next attempt.",
+      "You're wired for this. Register for Foundation and target the next attempt.",
       "Start with Accounting + Business Laws in parallel to build momentum.",
       "Set up a 4-hour daily deep-work block — protect it like a job.",
     ],
   };
-  const labels = {
-    explore: "Explore more",
-    potential: "Strong potential",
-    natural: "Natural fit",
-  };
+  const labels = { explore: "Explore more", potential: "Strong potential", natural: "Natural fit" };
   return { total, band, label: labels[band], plan: roadmaps[band] };
 }
 
+/* ---------- shell ---------- */
+function StepHeader({ eyebrow, title, sub }) {
+  return (
+    <div>
+      <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#8B5CF6]">{eyebrow}</div>
+      <h1 className="mt-4 font-display italic text-[56px] lg:text-[92px] leading-[0.95] tracking-[-0.02em]" data-testid="onb-step-title">{title}</h1>
+      {sub && <p className="mt-6 max-w-xl text-[16px] text-[#8B8B92] leading-[1.6]">{sub}</p>}
+    </div>
+  );
+}
+
+function NavBar({ current, total }) {
+  return (
+    <div className="fixed top-0 left-0 right-0 z-40 backdrop-blur-md bg-[#0A0A0C]/70 border-b border-white/[0.06]">
+      <div className="max-w-[1440px] mx-auto px-8 lg:px-16 h-16 flex items-center justify-between">
+        <Logo />
+        <div className="font-mono uppercase tracking-[0.24em] text-[11px] text-[#8B8B92]">
+          <span className="text-[#8B5CF6]">{String(current).padStart(2, "0")}</span>
+          <span className="mx-2 text-[#5A5A62]">/</span>
+          <span>{String(total).padStart(2, "0")}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Advance({ label = "continue", onClick, disabled, testId }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      data-magnetic
+      className="group inline-flex items-center gap-3 font-mono uppercase tracking-[0.24em] text-[13px] text-[#8B5CF6] disabled:opacity-40 disabled:cursor-not-allowed"
+      data-testid={testId}
+    >
+      <span className="relative">
+        [ {label} →
+        <span className="absolute left-0 -bottom-1 h-px w-full bg-[#8B5CF6] scale-x-0 origin-left group-hover:scale-x-100 transition-transform duration-500" />
+      </span>
+      <span>]</span>
+    </button>
+  );
+}
+
+function BackLink({ onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className="font-mono uppercase tracking-[0.24em] text-[11px] text-[#8B8B92] hover:text-[#F2F2F2] transition"
+      data-testid="onb-back"
+    >
+      ← back
+    </button>
+  );
+}
+
+/* ---------- fit-score counter ---------- */
+function FitScore({ total, band, label, plan }) {
+  const [display, setDisplay] = useState(0);
+  useEffect(() => {
+    let raf, start;
+    const step = (ts) => {
+      if (!start) start = ts;
+      const p = Math.min((ts - start) / 1400, 1);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setDisplay(Math.floor(total * eased));
+      if (p < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [total]);
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.6 }}
+      className="mt-16 max-w-3xl"
+      data-testid="fit-score-card"
+    >
+      <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#8B5CF6] mb-6">
+        [ your CA fit score ]
+      </div>
+      <div className="flex items-end gap-8">
+        <div className="font-mono tabular-nums text-[140px] lg:text-[200px] leading-[0.85] text-[#F2F2F2]">
+          {display}
+        </div>
+        <div className="pb-6">
+          <div className="font-mono text-[13px] text-[#5A5A62] tabular-nums">/ 100</div>
+          <div className="mt-2 font-display italic text-[36px] leading-[1] text-[#8B5CF6]">
+            {label}.
+          </div>
+        </div>
+      </div>
+      <div className="mt-10 h-px bg-white/[0.06]">
+        <motion.div
+          initial={{ scaleX: 0 }}
+          animate={{ scaleX: total / 100 }}
+          transition={{ duration: 1.4, ease: [0.22, 1, 0.36, 1] }}
+          style={{ transformOrigin: "left" }}
+          className="h-px bg-[#8B5CF6]"
+        />
+      </div>
+      <div className="mt-10 space-y-4">
+        {plan.map((p, i) => (
+          <div key={i} className="grid grid-cols-[40px_1fr] gap-4 items-baseline">
+            <span className="font-mono uppercase tracking-[0.22em] text-[11px] text-[#8B5CF6]">0{i + 1}</span>
+            <p className="text-[15px] text-[#F2F2F2] leading-[1.6]">{p}</p>
+          </div>
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
+/* ---------- page ---------- */
 export default function Onboarding() {
   const { user, setUser } = useAuth();
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [level, setLevel] = useState(null);
-  const [answers, setAnswers] = useState({}); // qIdx -> weight
-  const [goal, setGoal] = useState(180); // minutes
+  const [quizIdx, setQuizIdx] = useState(0);
+  const [answers, setAnswers] = useState({});
+  const [goal, setGoal] = useState(180);
   const [subjects, setSubjects] = useState([]);
   const [busy, setBusy] = useState(false);
 
   const isAspiring = level === "Aspiring";
-  const stepsTotal = isAspiring ? 5 : 4; // welcome, level, [quiz], subjects+goal, done
+  const stepsTotal = isAspiring ? 5 : 4;
   const displayStep = useMemo(() => {
     if (step === 1) return 1;
     if (step === 2) return 2;
-    if (step === 3) return isAspiring ? 3 : null; // skip if not aspiring
+    if (step === 3) return isAspiring ? 3 : null;
     if (step === 4) return isAspiring ? 4 : 3;
     if (step === 5) return isAspiring ? 5 : 4;
     return step;
@@ -139,16 +239,36 @@ export default function Onboarding() {
   const fit = isAspiring && answered ? computeFit(scores) : null;
 
   const goNext = () => {
-    if (step === 2 && !isAspiring) {
-      setStep(4); // skip quiz
-    } else {
-      setStep((s) => s + 1);
-    }
+    if (step === 2 && !isAspiring) setStep(4);
+    else setStep((s) => s + 1);
   };
   const goBack = () => {
     if (step === 4 && !isAspiring) setStep(2);
     else setStep((s) => Math.max(1, s - 1));
   };
+
+  const answerCurrent = (weight) => {
+    setAnswers((a) => ({ ...a, [quizIdx]: weight }));
+    if (quizIdx < QUIZ.length - 1) {
+      setTimeout(() => setQuizIdx((i) => i + 1), 320);
+    }
+  };
+
+  // keyboard shortcut for quiz options A/B/C/D
+  useEffect(() => {
+    if (step !== 3 || !isAspiring) return;
+    const onKey = (e) => {
+      const map = { a: 0, b: 1, c: 2, d: 3, "1": 0, "2": 1, "3": 2, "4": 3 };
+      const idx = map[e.key.toLowerCase()];
+      if (idx == null) return;
+      const q = QUIZ[quizIdx];
+      if (!q) return;
+      const opt = q.options[idx];
+      if (opt) answerCurrent(opt.w);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   const finish = async () => {
     setBusy(true);
@@ -164,206 +284,191 @@ export default function Onboarding() {
       setUser(r.data);
       confetti({
         particleCount: 140,
-        spread: 80,
-        origin: { y: 0.6 },
-        colors: ["#7C3AED", "#8B5CF6", "#F59E0B", "#F5F5F7"],
+        spread: 90,
+        origin: { y: 0.55 },
+        colors: ["#8B5CF6", "#B4FF39", "#F2F2F2"],
       });
-      setTimeout(() => navigate("/dashboard", { replace: true }), 900);
-    } catch (e) {
+      setTimeout(() => navigate("/dashboard", { replace: true }), 950);
+    } catch {
       setBusy(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#0A0A0B] text-[#F5F5F7] relative overflow-hidden">
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background:
-            "radial-gradient(50% 40% at 30% 20%, rgba(124,58,237,0.18) 0%, rgba(124,58,237,0) 60%), radial-gradient(40% 40% at 80% 80%, rgba(124,58,237,0.10) 0%, rgba(124,58,237,0) 60%)",
-        }}
-      />
-      <div className="relative">
-        <div className="max-w-[1200px] mx-auto px-6 py-6 flex items-center justify-between">
-          <Logo />
-          <div className="text-xs text-[#71717A] tabular-nums">
-            Step <span className="text-[#F5F5F7] font-semibold">{displayStep}</span> / {stepsTotal}
-          </div>
-        </div>
+    <div className="min-h-screen bg-[#0A0A0C] text-[#F2F2F2] relative overflow-hidden">
+      <GridBackground />
+      <NavBar current={displayStep || 1} total={stepsTotal} />
 
-        <div className="max-w-[880px] mx-auto px-6 pb-20">
-          <AnimatePresence mode="wait">
-            {step === 1 && (
-              <StepWrap key="s1">
-                <StepHeader
-                  eyebrow="Welcome"
-                  title={`Hey ${user?.name?.split(" ")[0] || "there"} — let's personalise your grid.`}
-                  subtitle="A minute of setup. Then you close every other tab."
-                />
-                <div className="mt-10 grid grid-cols-6 gap-2 max-w-[440px]">
-                  {Array.from({ length: 24 }).map((_, i) => (
+      <main className="relative pt-32 pb-24 max-w-[1440px] mx-auto px-8 lg:px-16">
+        <AnimatePresence mode="wait">
+          {step === 1 && (
+            <StepWrap key="s1">
+              <StepHeader
+                eyebrow={`[ 01 / hello, ${user?.name?.split(" ")[0]?.toLowerCase() || "there"} ]`}
+                title="Let's tune the grid."
+                sub="Sixty seconds. Then you close every other tab you have open."
+              />
+              <div className="mt-16 grid grid-cols-12 gap-6 items-center">
+                <div className="col-span-12 lg:col-span-6 grid grid-cols-8 gap-2 max-w-[520px]">
+                  {Array.from({ length: 48 }).map((_, i) => (
                     <motion.div
                       key={i}
                       initial={{ opacity: 0, scale: 0.6 }}
                       animate={{ opacity: 1, scale: 1 }}
-                      transition={{ delay: i * 0.02, duration: 0.3 }}
-                      className="aspect-square rounded-md"
+                      transition={{ delay: i * 0.012, duration: 0.3 }}
+                      className="aspect-square"
                       style={{
-                        background:
-                          i % 7 === 0
-                            ? "rgba(124,58,237,0.7)"
-                            : "rgba(255,255,255,0.04)",
-                        boxShadow: i % 7 === 0 ? "0 0 12px rgba(124,58,237,0.5)" : "none",
+                        background: [4, 11, 18, 27, 33, 41].includes(i) ? "#8B5CF6" : "rgba(255,255,255,0.05)",
+                        boxShadow: [4, 11, 18, 27, 33, 41].includes(i) ? "0 0 12px rgba(139,92,246,0.5)" : "none",
                       }}
                     />
                   ))}
                 </div>
-                <FooterBar
-                  onNext={goNext}
-                  nextLabel="Let's go"
-                  nextTestId="onb-welcome-next"
-                />
-              </StepWrap>
-            )}
+                <div className="col-span-12 lg:col-span-6 lg:pl-12">
+                  <p className="font-display italic text-[36px] leading-[1.1] text-[#F2F2F2]">
+                    "You didn't come here to be motivated. You came here to sit down."
+                  </p>
+                  <div className="mt-4 font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#5A5A62]">— the manifesto</div>
+                </div>
+              </div>
+              <div className="mt-20 flex items-center justify-between">
+                <span />
+                <Advance label="let's go" onClick={goNext} testId="onb-welcome-next" />
+              </div>
+            </StepWrap>
+          )}
 
-            {step === 2 && (
-              <StepWrap key="s2">
-                <StepHeader
-                  eyebrow="Your level"
-                  title="Where are you in the CA journey?"
-                  subtitle="This tunes every feature — from streaks to syllabus."
-                />
-                <div className="mt-10 grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {LEVELS.map((l) => {
-                    const Icon = l.icon;
-                    const active = level === l.key;
-                    return (
-                      <motion.button
-                        key={l.key}
-                        whileHover={{ y: -4 }}
+          {step === 2 && (
+            <StepWrap key="s2">
+              <StepHeader eyebrow="[ 02 / level ]" title="Where are you in this?" sub="This tunes everything — streaks, syllabus, radar." />
+              <ul className="mt-16 divide-y divide-white/[0.06] border-t border-b border-white/[0.06]" data-testid="onb-level-list">
+                {LEVELS.map((l, i) => {
+                  const active = level === l.key;
+                  return (
+                    <li key={l.key}>
+                      <button
                         onClick={() => setLevel(l.key)}
-                        className={`text-left rounded-[20px] p-5 border transition-all backdrop-blur-xl ${
-                          active
-                            ? "border-[#7C3AED] bg-[#7C3AED]/10 shadow-[0_20px_50px_-20px_rgba(124,58,237,0.7)]"
-                            : "border-white/[0.06] bg-[#111114] hover:border-white/[0.15]"
+                        className={`group w-full text-left grid grid-cols-[54px_1.6fr_1fr_60px] items-center gap-6 py-6 transition-all duration-300 ${
+                          active ? "pl-6" : "hover:pl-4"
                         }`}
                         data-testid={`onb-level-${l.key.toLowerCase()}`}
                       >
-                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${active ? "bg-[#7C3AED]/25" : "bg-white/[0.05]"}`}>
-                          <Icon className={`w-5 h-5 ${active ? "text-[#F5F5F7]" : "text-[#7C3AED]"}`} strokeWidth={1.5} />
-                        </div>
-                        <div className="text-[17px] font-semibold tracking-tight">{l.label}</div>
-                        <div className="text-sm text-[#A1A1AA] mt-1">{l.desc}</div>
-                      </motion.button>
-                    );
-                  })}
-                </div>
-                <FooterBar
-                  onBack={goBack}
-                  onNext={goNext}
-                  nextDisabled={!level}
-                  nextTestId="onb-level-next"
-                />
-              </StepWrap>
-            )}
+                        <span className="font-mono uppercase tracking-[0.22em] text-[11px] text-[#5A5A62]">0{i + 1}</span>
+                        <span className={`font-display italic text-[40px] lg:text-[56px] leading-[0.95] transition-colors ${active ? "text-[#8B5CF6]" : "text-[#F2F2F2] group-hover:text-[#8B5CF6]"}`}>
+                          {l.label}.
+                        </span>
+                        <span className="font-mono uppercase tracking-[0.2em] text-[10.5px] text-[#8B8B92] hidden lg:block">{l.desc}</span>
+                        <span className={`justify-self-end font-mono text-[11px] uppercase tracking-[0.22em] whitespace-nowrap ${active ? "text-[#8B5CF6]" : "text-[#5A5A62] group-hover:text-[#F2F2F2]"}`}>
+                          {active ? "[ selected ]" : "select →"}
+                        </span>
+                        {active && (
+                          <motion.div
+                            layoutId="level-bar"
+                            className="absolute left-0 w-1 h-16 bg-[#8B5CF6]"
+                            style={{ marginLeft: -24 }}
+                          />
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="mt-16 flex items-center justify-between">
+                <BackLink onClick={goBack} />
+                <Advance label="continue" onClick={goNext} disabled={!level} testId="onb-level-next" />
+              </div>
+            </StepWrap>
+          )}
 
-            {step === 3 && isAspiring && (
-              <StepWrap key="s3">
-                <StepHeader
-                  eyebrow="Am I CA material?"
-                  title="Five quick reads. Zero judgement."
-                  subtitle="Deterministic scoring — no AI, no fluff."
-                />
-                <div className="mt-8 space-y-5">
-                  {QUIZ.map((q, qi) => (
-                    <div
-                      key={qi}
-                      className="rounded-[20px] border border-white/[0.06] bg-[#111114] p-5"
-                      data-testid={`quiz-q-${qi}`}
-                    >
-                      <div className="text-[15px] font-medium">{qi + 1}. {q.q}</div>
-                      <div className="mt-4 grid sm:grid-cols-2 gap-2.5">
-                        {q.options.map((op, oi) => {
-                          const selected = answers[qi] === op.w;
-                          return (
-                            <button
-                              key={oi}
-                              onClick={() => setAnswers((a) => ({ ...a, [qi]: op.w }))}
-                              className={`text-left text-sm px-4 py-2.5 rounded-xl border transition ${
-                                selected
-                                  ? "border-[#7C3AED] bg-[#7C3AED]/15 text-[#F5F5F7]"
-                                  : "border-white/[0.06] bg-white/[0.02] text-[#A1A1AA] hover:text-[#F5F5F7] hover:border-white/[0.15]"
-                              }`}
-                              data-testid={`quiz-q${qi}-opt${oi}`}
-                            >
-                              {op.t}
-                            </button>
-                          );
-                        })}
-                      </div>
+          {step === 3 && isAspiring && (
+            <StepWrap key="s3">
+              <StepHeader
+                eyebrow="[ 03 / am i CA material? ]"
+                title="Five reads. Zero judgement."
+                sub="Deterministic scoring. Press A · B · C · D or click."
+              />
+              <div className="mt-12">
+                {!answered ? (
+                  <div className="max-w-3xl">
+                    <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#8B5CF6]">
+                      question {String(quizIdx + 1).padStart(2, "0")} / {String(QUIZ.length).padStart(2, "0")}
                     </div>
-                  ))}
-                </div>
-
-                {fit && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="mt-8 rounded-[24px] border border-[#7C3AED]/40 bg-gradient-to-br from-[#16161B] to-[#111114] p-6 shadow-[0_30px_80px_-30px_rgba(124,58,237,0.6)]"
-                    data-testid="fit-score-card"
-                  >
-                    <div className="flex items-center gap-2 text-xs uppercase tracking-widest text-[#7C3AED]">
-                      <Sparkles className="w-3.5 h-3.5" /> Your CA Fit Score
-                    </div>
-                    <div className="mt-3 flex items-end gap-4">
-                      <div className="text-6xl font-extrabold tracking-[-0.04em]">{fit.total}</div>
-                      <div className="pb-2 text-[#A1A1AA] text-sm">/ 100 · <span className="text-[#F5F5F7] font-semibold">{fit.label}</span></div>
-                    </div>
-                    <div className="mt-4 h-2 rounded-full bg-white/[0.05] overflow-hidden">
+                    <AnimatePresence mode="wait">
                       <motion.div
-                        initial={{ width: 0 }}
-                        animate={{ width: `${fit.total}%` }}
-                        transition={{ duration: 0.8, ease: "easeOut" }}
-                        className="h-full bg-gradient-to-r from-[#7C3AED] to-[#F59E0B]"
-                      />
-                    </div>
-                    <ul className="mt-5 space-y-2.5">
-                      {fit.plan.map((p, i) => (
-                        <li key={i} className="flex gap-3 text-sm text-[#F5F5F7]">
-                          <div className="flex-none w-5 h-5 rounded-full bg-[#7C3AED]/20 border border-[#7C3AED]/40 flex items-center justify-center mt-0.5">
-                            <Check className="w-3 h-3 text-[#7C3AED]" strokeWidth={2.5} />
-                          </div>
-                          {p}
-                        </li>
+                        key={quizIdx}
+                        initial={{ opacity: 0, y: 16 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -16 }}
+                        transition={{ duration: 0.4 }}
+                        data-testid={`quiz-q-${quizIdx}`}
+                      >
+                        <div className="mt-6 font-display italic text-[40px] lg:text-[60px] leading-[1] tracking-[-0.02em] text-[#F2F2F2]">
+                          {QUIZ[quizIdx].q}
+                        </div>
+                        <ul className="mt-12 space-y-4">
+                          {QUIZ[quizIdx].options.map((op, oi) => {
+                            const letter = String.fromCharCode(65 + oi);
+                            const selected = answers[quizIdx] === op.w;
+                            return (
+                              <li key={oi}>
+                                <button
+                                  onClick={() => answerCurrent(op.w)}
+                                  className={`w-full text-left grid grid-cols-[54px_1fr] gap-6 items-baseline py-4 border-t border-white/[0.06] group ${selected ? "text-[#8B5CF6]" : "text-[#F2F2F2] hover:text-[#8B5CF6]"} transition-colors`}
+                                  data-testid={`quiz-q${quizIdx}-opt${oi}`}
+                                >
+                        <span className="font-mono uppercase tracking-[0.22em] text-[13px] text-[#8B5CF6] whitespace-nowrap">[ {letter} ]</span>
+                                  <span className="text-[18px] leading-[1.55] transition-transform group-hover:translate-x-2 duration-500">{op.t}</span>
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </motion.div>
+                    </AnimatePresence>
+                    <div className="mt-12 flex items-center gap-2">
+                      {QUIZ.map((_, i) => (
+                        <div key={i} className={`h-px flex-1 ${i <= quizIdx ? "bg-[#8B5CF6]" : "bg-white/[0.06]"}`} />
                       ))}
-                    </ul>
-                  </motion.div>
-                )}
-                <FooterBar
-                  onBack={goBack}
-                  onNext={goNext}
-                  nextDisabled={!answered}
-                  nextTestId="onb-quiz-next"
-                />
-              </StepWrap>
-            )}
-
-            {step === 4 && (
-              <StepWrap key="s4">
-                <StepHeader
-                  eyebrow="Almost there"
-                  title="Daily goal & subjects (optional)"
-                  subtitle="You can change these anytime."
-                />
-                <div className="mt-8 rounded-[20px] border border-white/[0.06] bg-[#111114] p-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-sm text-[#A1A1AA]">Daily study goal</div>
-                      <div className="text-3xl font-extrabold tracking-[-0.03em] mt-1">
-                        {Math.floor(goal / 60)}h {goal % 60 ? `${goal % 60}m` : ""}
-                      </div>
                     </div>
-                    <div className="text-xs text-[#71717A]">Recommended: 3h</div>
+                    {quizIdx > 0 && (
+                      <div className="mt-8">
+                        <button
+                          onClick={() => setQuizIdx((i) => Math.max(0, i - 1))}
+                          className="font-mono uppercase tracking-[0.22em] text-[11px] text-[#8B8B92] hover:text-[#F2F2F2] transition"
+                        >
+                          ← previous question
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <FitScore {...fit} />
+                )}
+              </div>
+              <div className="mt-16 flex items-center justify-between">
+                <BackLink onClick={goBack} />
+                <Advance label="continue" onClick={goNext} disabled={!answered} testId="onb-quiz-next" />
+              </div>
+            </StepWrap>
+          )}
+
+          {step === 4 && (
+            <StepWrap key="s4">
+              <StepHeader
+                eyebrow={`[ ${isAspiring ? "04" : "03"} / tune ]`}
+                title="Goal & subjects."
+                sub="Change these anytime. Nothing here is locked."
+              />
+              <div className="mt-16 grid grid-cols-12 gap-8 border-t border-white/[0.06] pt-12">
+                <div className="col-span-12 lg:col-span-6">
+                  <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#5A5A62]">daily study goal</div>
+                  <div className="mt-4 font-mono tabular-nums text-[100px] leading-none text-[#F2F2F2]">
+                    {Math.floor(goal / 60)}
+                    <span className="text-[#5A5A62] text-[40px] mx-2">h</span>
+                    {goal % 60 ? <>
+                      {String(goal % 60).padStart(2, "0")}
+                      <span className="text-[#5A5A62] text-[40px] ml-2">m</span>
+                    </> : null}
                   </div>
                   <input
                     type="range"
@@ -372,13 +477,15 @@ export default function Onboarding() {
                     step={30}
                     value={goal}
                     onChange={(e) => setGoal(parseInt(e.target.value, 10))}
-                    className="w-full mt-5 accent-[#7C3AED]"
+                    className="w-full mt-8"
                     data-testid="onb-goal-slider"
                   />
+                  <div className="mt-3 font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62] flex justify-between">
+                    <span>1h</span><span>recommended · 3h</span><span>10h</span>
+                  </div>
                 </div>
-
-                <div className="mt-6 rounded-[20px] border border-white/[0.06] bg-[#111114] p-6">
-                  <div className="text-sm text-[#A1A1AA] mb-3">Subjects to focus on</div>
+                <div className="col-span-12 lg:col-span-6 lg:pl-12 lg:border-l lg:border-white/[0.06]">
+                  <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#5A5A62] mb-6">subjects on the grid</div>
                   <div className="flex flex-wrap gap-2">
                     {(SUBJECTS_BY_LEVEL[level] || []).map((s) => {
                       const active = subjects.includes(s);
@@ -386,61 +493,49 @@ export default function Onboarding() {
                         <button
                           key={s}
                           onClick={() =>
-                            setSubjects((cur) =>
-                              cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]
-                            )
+                            setSubjects((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]))
                           }
-                          className={`px-3.5 py-2 rounded-full text-sm border transition ${
+                          className={`font-mono uppercase tracking-[0.22em] text-[11px] px-3 py-2 border transition-all ${
                             active
-                              ? "border-[#7C3AED] bg-[#7C3AED]/15 text-[#F5F5F7]"
-                              : "border-white/[0.06] bg-white/[0.02] text-[#A1A1AA] hover:text-[#F5F5F7]"
+                              ? "border-[#8B5CF6] text-[#8B5CF6] bg-[#8B5CF6]/10"
+                              : "border-white/[0.1] text-[#8B8B92] hover:text-[#F2F2F2] hover:border-white/[0.25]"
                           }`}
                           data-testid={`onb-subject-${s.replace(/\s+/g, "-").toLowerCase()}`}
                         >
-                          {s}
+                          {active ? `[ ${s} ]` : s}
                         </button>
                       );
                     })}
                   </div>
                 </div>
-                <FooterBar
-                  onBack={goBack}
-                  onNext={goNext}
-                  nextTestId="onb-goal-next"
-                />
-              </StepWrap>
-            )}
+              </div>
+              <div className="mt-16 flex items-center justify-between">
+                <BackLink onClick={goBack} />
+                <Advance label="continue" onClick={goNext} testId="onb-goal-next" />
+              </div>
+            </StepWrap>
+          )}
 
-            {step === 5 && (
-              <StepWrap key="s5">
-                <StepHeader
-                  eyebrow="You're in"
-                  title="Welcome to the Grid."
-                  subtitle="Take a breath. Then open your first focus session."
-                />
-                <div className="mt-10 rounded-[24px] border border-[#7C3AED]/30 bg-gradient-to-br from-[#16161B] to-[#111114] p-8">
-                  <div className="flex flex-wrap gap-4 text-sm">
-                    <Pill label="Level" value={level} />
-                    <Pill label="Daily goal" value={`${Math.floor(goal / 60)}h ${goal % 60 ? `${goal % 60}m` : ""}`} />
-                    {fit && <Pill label="Fit score" value={`${fit.total}/100`} />}
-                    <Pill label="Subjects" value={subjects.length ? `${subjects.length} selected` : "—"} />
-                  </div>
-                </div>
-                <div className="mt-8 flex justify-end">
-                  <button
-                    onClick={finish}
-                    disabled={busy}
-                    className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-[#7C3AED] hover:bg-[#8B5CF6] font-semibold text-[15px] transition-all shadow-[0_20px_50px_-15px_rgba(124,58,237,0.75)] disabled:opacity-60"
-                    data-testid="onb-finish"
-                  >
-                    {busy ? "Setting up…" : "Enter the Grid"} <ArrowRight className="w-4 h-4" />
-                  </button>
-                </div>
-              </StepWrap>
-            )}
-          </AnimatePresence>
-        </div>
-      </div>
+          {step === 5 && (
+            <StepWrap key="s5">
+              <StepHeader
+                eyebrow={`[ ${isAspiring ? "05" : "04"} / you're in ]`}
+                title="Welcome to the grid."
+                sub="Take a breath. Then open your first focus session."
+              />
+              <div className="mt-16 grid grid-cols-2 lg:grid-cols-4 gap-6 border-t border-white/[0.06] pt-12">
+                <Chip k="LEVEL" v={level} />
+                <Chip k="DAILY GOAL" v={`${Math.floor(goal / 60)}h ${goal % 60 ? `${goal % 60}m` : ""}`} />
+                {fit && <Chip k="FIT SCORE" v={`${fit.total}/100`} accent />}
+                <Chip k="SUBJECTS" v={subjects.length ? `${subjects.length} on grid` : "—"} />
+              </div>
+              <div className="mt-16 flex items-center justify-end">
+                <Advance label={busy ? "opening" : "enter the grid"} onClick={finish} disabled={busy} testId="onb-finish" />
+              </div>
+            </StepWrap>
+          )}
+        </AnimatePresence>
+      </main>
     </div>
   );
 }
@@ -448,55 +543,21 @@ export default function Onboarding() {
 function StepWrap({ children }) {
   return (
     <motion.div
-      initial={{ opacity: 0, y: 12 }}
+      initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -8 }}
-      transition={{ duration: 0.28 }}
+      exit={{ opacity: 0, y: -12 }}
+      transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
     >
       {children}
     </motion.div>
   );
 }
 
-function StepHeader({ eyebrow, title, subtitle }) {
+function Chip({ k, v, accent }) {
   return (
-    <div>
-      <div className="text-xs uppercase tracking-[0.2em] text-[#7C3AED]">{eyebrow}</div>
-      <h1 className="mt-3 text-4xl sm:text-5xl font-extrabold tracking-[-0.03em] leading-[1.05]" data-testid="onb-step-title">{title}</h1>
-      {subtitle && <p className="mt-3 text-[16px] text-[#A1A1AA]">{subtitle}</p>}
-    </div>
-  );
-}
-
-function FooterBar({ onBack, onNext, nextLabel = "Continue", nextDisabled = false, nextTestId }) {
-  return (
-    <div className="mt-10 flex items-center justify-between">
-      {onBack ? (
-        <button
-          onClick={onBack}
-          className="inline-flex items-center gap-2 text-sm text-[#A1A1AA] hover:text-[#F5F5F7] transition"
-          data-testid="onb-back"
-        >
-          <ArrowLeft className="w-4 h-4" /> Back
-        </button>
-      ) : <span />}
-      <button
-        onClick={onNext}
-        disabled={nextDisabled}
-        className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-[#7C3AED] hover:bg-[#8B5CF6] disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-[15px] transition-all shadow-[0_20px_50px_-15px_rgba(124,58,237,0.6)]"
-        data-testid={nextTestId}
-      >
-        {nextLabel} <ArrowRight className="w-4 h-4" />
-      </button>
-    </div>
-  );
-}
-
-function Pill({ label, value }) {
-  return (
-    <div className="px-4 py-2.5 rounded-xl border border-white/[0.06] bg-white/[0.03]">
-      <div className="text-[10px] uppercase tracking-widest text-[#71717A]">{label}</div>
-      <div className="text-sm text-[#F5F5F7] font-semibold mt-0.5">{value}</div>
+    <div className="border-t border-white/[0.06] pt-4">
+      <div className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62]">{k}</div>
+      <div className={`mt-2 font-display italic text-[28px] leading-[1] ${accent ? "text-[#8B5CF6]" : "text-[#F2F2F2]"}`}>{v}</div>
     </div>
   );
 }

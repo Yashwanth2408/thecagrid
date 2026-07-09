@@ -1,8 +1,8 @@
 import React from "react";
 import { motion } from "framer-motion";
-import { useAuth } from "@/context/AuthContext";
 import AppShell from "@/components/AppShell";
-import { Flame, Target, Sparkles, BookOpen } from "lucide-react";
+import GridBackground from "@/components/GridBackground";
+import { useAuth } from "@/context/AuthContext";
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -11,97 +11,89 @@ export default function Dashboard() {
 
   return (
     <AppShell>
-      <div className="max-w-[1200px] mx-auto px-8 py-10">
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.35 }}
-        >
-          <div className="text-xs uppercase tracking-[0.2em] text-[#7C3AED]">
-            Welcome back
-          </div>
-          <h1 className="mt-3 text-4xl sm:text-5xl font-extrabold tracking-[-0.03em]" data-testid="dash-welcome-heading">
-            Hey {firstName}. Ready to sit down?
-          </h1>
-          <p className="mt-3 text-[#A1A1AA] max-w-xl">
-            Your dashboard unlocks fully in Phase 2 — focus timer, streaks, AI mentor and syllabus tracking. For now, here's the shape of the Grid.
-          </p>
-        </motion.div>
-
-        <div className="mt-10 grid md:grid-cols-3 gap-4">
-          <BentoCard
-            testId="dash-level-card"
-            icon={<BookOpen className="w-4 h-4 text-[#7C3AED]" strokeWidth={1.6} />}
-            label="Your level"
-            value={user?.journey_level || "—"}
-            note="Change anytime in Settings."
-          />
-          <BentoCard
-            testId="dash-goal-card"
-            icon={<Target className="w-4 h-4 text-[#7C3AED]" strokeWidth={1.6} />}
-            label="Daily goal"
-            value={`${Math.floor(goal / 60)}h ${goal % 60 ? `${goal % 60}m` : ""}`}
-            note="Streak logic wakes up in Phase 2."
-          />
-          <BentoCard
-            testId="dash-streak-card"
-            icon={<Flame className="w-4 h-4 text-[#F59E0B]" strokeWidth={1.6} />}
-            label="Streak"
-            value="0 days"
-            note="Complete your first focus session to start."
-          />
-        </div>
-
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.15, duration: 0.35 }}
-          className="mt-6 rounded-[24px] border border-[#7C3AED]/30 bg-gradient-to-br from-[#16161B] to-[#111114] p-8 relative overflow-hidden"
-          data-testid="dash-phase2-placeholder"
-        >
-          <div
-            className="absolute inset-0 pointer-events-none"
-            style={{
-              background:
-                "radial-gradient(40% 60% at 80% 20%, rgba(124,58,237,0.20) 0%, rgba(124,58,237,0) 65%)",
-            }}
-          />
-          <div className="relative">
-            <div className="flex items-center gap-2 text-xs uppercase tracking-widest text-[#7C3AED]">
-              <Sparkles className="w-3.5 h-3.5" /> Coming in Phase 2
+      <div className="relative min-h-[calc(100vh-4rem)]">
+        <GridBackground />
+        <div className="relative max-w-[1440px] mx-auto px-8 lg:px-16 py-20">
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#8B5CF6]">
+              [ session · {new Date().toLocaleDateString("en-IN", { weekday: "short", day: "2-digit", month: "short" }).toUpperCase()} ]
             </div>
-            <div className="mt-3 text-2xl sm:text-3xl font-extrabold tracking-[-0.03em]">
-              Your full dashboard is next.
-            </div>
-            <p className="mt-3 text-[#A1A1AA] max-w-xl">
-              Focus timer with Pomodoro sprints, streak logic with a weekly grace, AI mentor with citations, syllabus tracker per paper, and a regulatory radar pushing ICAI updates the moment they drop.
+            <h1
+              className="mt-6 font-display italic text-[64px] sm:text-[92px] lg:text-[128px] leading-[0.92] tracking-[-0.02em] text-[#F2F2F2]"
+              data-testid="dash-welcome-heading"
+            >
+              Welcome back,<br />{firstName}.
+            </h1>
+            <p className="mt-8 font-mono uppercase tracking-[0.22em] text-[11px] text-[#8B8B92]">
+              level · <span className="text-[#F2F2F2]">{user?.journey_level || "—"}</span>
+              <span className="mx-4 text-[#5A5A62]">/</span>
+              daily · <span className="text-[#F2F2F2]">{Math.floor(goal / 60)}h {goal % 60 ? `${goal % 60}m` : ""}</span>
+              <span className="mx-4 text-[#5A5A62]">/</span>
+              streak · <span className="text-[#B4FF39]">00d</span>
             </p>
-            <div className="mt-6 flex flex-wrap gap-2">
-              {["Focus Timer", "Streak Engine", "AI Mentor", "Syllabus Tracker", "Regulatory Radar"].map((t) => (
-                <span key={t} className="text-xs px-3 py-1.5 rounded-full border border-white/[0.06] bg-white/[0.03] text-[#A1A1AA]">
-                  {t}
-                </span>
-              ))}
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.2 }}
+            className="mt-20 grid grid-cols-12 gap-4 lg:gap-6"
+          >
+            <StatCard testId="dash-level-card" label="LEVEL" value={user?.journey_level || "—"} note="Change anytime in settings." className="col-span-12 lg:col-span-4" />
+            <StatCard testId="dash-goal-card" label="GOAL" value={`${Math.floor(goal / 60)}h ${goal % 60 ? `${goal % 60}m` : ""}`} note="Timer wakes up in Phase 2." className="col-span-12 lg:col-span-4" />
+            <StatCard testId="dash-streak-card" label="STREAK" value={<span className="text-[#B4FF39]">0d</span>} note="First focus session starts it." className="col-span-12 lg:col-span-4" />
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.35 }}
+            className="mt-6 border border-[#8B5CF6]/40 relative overflow-hidden p-10 lg:p-14"
+            data-testid="dash-phase2-placeholder"
+          >
+            <div className="absolute inset-0 pointer-events-none"
+                 style={{ background: "radial-gradient(circle at 80% 20%, rgba(139,92,246,0.18), transparent 50%)" }} />
+            <div className="relative grid grid-cols-12 gap-8 items-end">
+              <div className="col-span-12 lg:col-span-8">
+                <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#8B5CF6]">[ phase 02 · queued ]</div>
+                <h2 className="mt-4 font-display italic text-[44px] lg:text-[72px] leading-[0.95] tracking-[-0.02em] text-[#F2F2F2]">
+                  The rest of the grid<br />opens next.
+                </h2>
+                <p className="mt-6 max-w-xl text-[15px] text-[#8B8B92] leading-[1.65]">
+                  Focus timer with Pomodoro sprints, streak logic with a weekly grace, AI mentor with citations, syllabus tracker per paper, and a regulatory radar pushing ICAI updates the moment they drop.
+                </p>
+              </div>
+              <div className="col-span-12 lg:col-span-4 space-y-3 lg:pl-8 lg:border-l lg:border-white/[0.06]">
+                {["01 · Focus Timer", "02 · Streak Engine", "03 · AI Mentor", "04 · Syllabus", "05 · Regulatory Radar"].map((t) => (
+                  <div key={t} className="font-mono uppercase tracking-[0.22em] text-[11px] text-[#8B8B92] flex items-center gap-3">
+                    <span className="w-1.5 h-1.5 bg-[#8B5CF6]" />{t}
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
-        </motion.div>
+          </motion.div>
+        </div>
       </div>
     </AppShell>
   );
 }
 
-function BentoCard({ icon, label, value, note, testId }) {
+function StatCard({ label, value, note, testId, className = "" }) {
   return (
     <motion.div
       whileHover={{ y: -3 }}
-      className="rounded-[20px] border border-white/[0.06] bg-[#111114] p-6 transition-all hover:border-[#7C3AED]/40 hover:shadow-[0_20px_50px_-25px_rgba(124,58,237,0.6)]"
+      transition={{ type: "spring", stiffness: 260, damping: 22 }}
+      className={`border-t border-white/[0.08] pt-6 pb-8 ${className}`}
       data-testid={testId}
+      data-cursor-label="OPEN →"
     >
-      <div className="flex items-center gap-2 text-xs uppercase tracking-widest text-[#71717A]">
-        {icon} {label}
-      </div>
-      <div className="mt-3 text-3xl font-extrabold tracking-[-0.03em]">{value}</div>
-      {note && <div className="mt-2 text-xs text-[#A1A1AA]">{note}</div>}
+      <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#5A5A62]">{label}</div>
+      <div className="mt-3 font-display italic text-[56px] leading-[0.95] text-[#F2F2F2]">{value}</div>
+      {note && <div className="mt-3 font-mono uppercase tracking-[0.22em] text-[10px] text-[#8B8B92]">{note}</div>}
     </motion.div>
   );
 }

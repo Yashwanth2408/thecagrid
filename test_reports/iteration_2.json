@@ -1,0 +1,39 @@
+{
+  "summary": "Post-visual-overhaul regression validation of The CA Grid — Phase 1. Verified backend is UNCHANGED (14/15 pytest tests pass, same result as iteration 1 — the single pre-existing failure is the /api/openapi.json 404 documented in iteration_1). Frontend visual overhaul preserved ALL Phase 1 functionality end-to-end: landing hero + live ticker (fonts confirmed: Instrument Serif on headings, Space Grotesk on body, JetBrains Mono loaded), split-screen /login with inline login-error on wrong password, /signup redirect to /onboarding, Aspiring branch shows one-question quiz that auto-advances (~320ms), 5 answers reveal fit-score-card (score animates to 100/100 for a positive answer set), Foundation branch skips quiz and jumps to goal+subjects, onb-finish POSTs /api/onboarding and /api/auth/me confirms persistence (onboarded=true, journey_level=Foundation, subjects=[Accounting], daily_goal_minutes=180, fit_score=None for non-Aspiring), confetti fires and /dashboard renders with editorial serif 'Welcome back, {name}.' plus level/goal/streak cards + phase2-placeholder + full topnav (streak-flame, user-avatar-trigger) and violet-bar sidebar (dashboard/focus/analytics/profile). sidebar-focus -> /coming-soon?f=focus renders coming-soon-card with a working back-to-dashboard. Avatar dropdown menu-logout clears session and visiting /dashboard bounces to /login. No console errors of concern; the two 401s at load are the expected /api/auth/me probes for unauthenticated visitors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/openapi.json",
+        "issue": "PRE-EXISTING from iteration 1 (backend was NOT changed in this iteration). FastAPI still mounts openapi at root /openapi.json which is caught by the frontend ingress. Fix: FastAPI(openapi_url='/api/openapi.json', docs_url='/api/docs', redoc_url='/api/redoc')."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(carried over from iteration 1, backend untouched) Expose OpenAPI under /api by setting FastAPI(openapi_url='/api/openapi.json'). Not a regression from the visual overhaul."
+  ],
+  "critical_code_review_comments": [
+    "Onboarding.jsx is 564 lines — near the 700-line ceiling. As Phase 2 lands (focus timer step, mentor step) split into steps/*.jsx or use a reducer + step registry.",
+    "Custom cursor + noise overlay + cursor-reactive grid are heavy DOM listeners on every mousemove. They correctly opt out on touch/reduced-motion, but consider requestAnimationFrame throttling in CustomCursor for low-power devices.",
+    "Confetti canvas mount on Dashboard fires on every fresh onboarding — good. Confirm listener cleanup on unmount (dashboard route change) to avoid retained canvas contexts.",
+    "AuthContext.checkAuth still swallows all errors (from iteration 1). Distinguish 401 (expected, unauthenticated) from network failure so the UI can show a retry banner.",
+    "Backend server.py still uses deprecated @app.on_event startup/shutdown and get_current_user is not wired via Depends. Not blocking Phase 1, revisit in Phase 2."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "93% (14/15, identical to iteration 1)", "frontend": "100% (all 13 review-request scenarios pass)"},
+  "test_credentials": "demo@cagrid.in / demo123 (seeded via POST /api/seed on backend startup)",
+  "seed_data_creation": "Fresh e2e users during frontend run: asp_<ts>@cagrid.in (Aspiring path w/ quiz), fnd_<ts>@cagrid.in (Foundation path skip quiz). Not cleaned up (no delete API).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Visual overhaul is functionally clean — all data-testids preserved from iteration 1 and all navigation flows still work. Notable frontend details verified: (1) fit-score-card shows a counter that reaches the computed score (100 for the all-first-option answer set) plus a roadmap block; (2) onb-goal-slider is a controlled React <input type=range>, so tests that want to change the value should use page.locator().evaluate to dispatch React-friendly change events or better yet drag/keydown — direct el.value=240 will not stick; (3) Foundation subjects are ['Accounting','Business Laws','Statistics','Economics'] giving onb-subject-accounting; Aspiring subjects are ['Accounting basics',...] giving onb-subject-accounting-basics — pick the right one per level; (4) Custom cursor uses pointer-events:none so clicks pass through cleanly with force=True; (5) 2 401s in console on landing come from AuthContext probing /api/auth/me — expected, not an issue.",
+  "rca of the issue": "N/A — no new regressions found. The lone failing test (openapi_public) is inherited from iteration 1 and its RCA (FastAPI default openapi_url served at root, ingress routes non-/api paths to React) is unchanged since server.py was not modified."
+}
