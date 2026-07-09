@@ -1,0 +1,25 @@
+{
+  "name": "The CA Grid",
+  "short_name": "CA Grid",
+  "description": "Focus, streaks, AI mentor and analytics for Indian CA aspirants.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0A0A0C",
+  "theme_color": "#0A0A0C",
+  "orientation": "portrait",
+  "lang": "en-IN",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "type": "image/png",
+      "sizes": "180x180"
+    }
+  ],
+  "categories": ["education", "productivity"]
+}

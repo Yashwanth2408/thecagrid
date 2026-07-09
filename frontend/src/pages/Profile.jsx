@@ -2,15 +2,64 @@ import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import AppShell from "@/components/AppShell";
 import BadgeIcon from "@/components/BadgeIcon";
-import { api } from "@/lib/apiClient";
+import { api, API } from "@/lib/apiClient";
 import { useAuth } from "@/context/AuthContext";
+import { toast } from "sonner";
+import { useNavigate } from "react-router-dom";
 
 const TABS = ["ALL", "UNLOCKED", "LOCKED", "LEGENDARY"];
 
 export default function Profile() {
-  const { user, stats } = useAuth();
+  const { user, stats, logout } = useAuth();
   const [badges, setBadges] = useState([]);
   const [tab, setTab] = useState("ALL");
+  const [exporting, setExporting] = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const navigate = useNavigate();
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      // Use fetch so we can trigger a native download
+      const res = await fetch(`${API}/account/export`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `cagrid-export-${user?.user_id || "me"}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success("Export downloaded");
+    } catch (e) {
+      toast.error("Export failed. Try again.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (deleteConfirm !== "DELETE") {
+      toast.error('Type DELETE to confirm');
+      return;
+    }
+    setDeleting(true);
+    try {
+      await api.delete("/account/delete");
+      toast.success("Account deleted");
+      if (logout) await logout();
+      navigate("/", { replace: true });
+    } catch (e) {
+      toast.error("Delete failed. Try again.");
+      setDeleting(false);
+    }
+  };
 
   useEffect(() => {
     api.get("/achievements").then((r) => setBadges(r.data)).catch(() => {});
@@ -136,6 +185,88 @@ export default function Profile() {
                 No badges in this filter yet.
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Account data rights */}
+        <div className="mt-20 border-t border-white/[0.06] pt-10" data-testid="account-section">
+          <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#8B5CF6]">[ account ]</div>
+          <h2 className="mt-3 font-display italic text-[40px] lg:text-[56px] leading-[0.98] tracking-[-0.02em]">
+            Your data. <span className="text-[#8B5CF6]">Your rules.</span>
+          </h2>
+          <p className="mt-4 text-white/60 text-[15px] max-w-[60ch]">
+            Export a JSON snapshot of every row tied to your account, or permanently
+            delete the account and all associated data. Deletion is immediate and
+            irreversible.
+          </p>
+          <div className="mt-8 grid md:grid-cols-2 gap-4">
+            <div className="p-6 border border-white/[0.08] bg-[#0F0F12]" data-testid="account-export-card">
+              <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#B4FF39] mb-2">
+                EXPORT
+              </div>
+              <div className="text-[17px] font-semibold mb-1">Download my data</div>
+              <div className="text-white/50 text-sm mb-6">
+                Profile, sessions, streaks, badges, mentor history, and study plans.
+              </div>
+              <button
+                onClick={handleExport}
+                disabled={exporting}
+                data-testid="account-export-btn"
+                className="px-4 py-2 rounded-full text-sm font-medium text-black hover:opacity-90 transition disabled:opacity-50"
+                style={{ background: "#B4FF39" }}
+              >
+                {exporting ? "Preparing…" : "Export JSON"}
+              </button>
+            </div>
+            <div className="p-6 border border-[#FF6B6B]/30 bg-[#0F0F12]" data-testid="account-delete-card">
+              <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#FF6B6B] mb-2">
+                DANGER · Delete account
+              </div>
+              <div className="text-[17px] font-semibold mb-1">Delete everything</div>
+              <div className="text-white/50 text-sm mb-6">
+                Cascades across profile, sessions, mentor history &amp; plans. Cannot be undone.
+              </div>
+              {!showDelete ? (
+                <button
+                  onClick={() => setShowDelete(true)}
+                  data-testid="account-delete-btn"
+                  className="px-4 py-2 rounded-full text-sm font-medium border border-[#FF6B6B]/50 text-[#FF6B6B] hover:bg-[#FF6B6B]/10 transition"
+                >
+                  Delete my account
+                </button>
+              ) : (
+                <div className="space-y-3">
+                  <label className="block">
+                    <span className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-white/50">
+                      Type DELETE to confirm
+                    </span>
+                    <input
+                      type="text"
+                      value={deleteConfirm}
+                      onChange={(e) => setDeleteConfirm(e.target.value)}
+                      data-testid="account-delete-confirm-input"
+                      className="mt-2 w-full bg-transparent border border-white/[0.15] focus:border-[#FF6B6B] focus:outline-none px-3 py-2 text-sm text-white"
+                    />
+                  </label>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleDelete}
+                      disabled={deleting}
+                      data-testid="account-delete-confirm-btn"
+                      className="px-4 py-2 rounded-full text-sm font-medium bg-[#FF6B6B] text-black disabled:opacity-50"
+                    >
+                      {deleting ? "Deleting…" : "Confirm delete"}
+                    </button>
+                    <button
+                      onClick={() => { setShowDelete(false); setDeleteConfirm(""); }}
+                      className="px-4 py-2 rounded-full text-sm font-medium border border-white/15 hover:border-white/40 transition"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

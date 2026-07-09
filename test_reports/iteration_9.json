@@ -1,0 +1,30 @@
+{
+  "summary": "Phase 3.5 production hardening — comprehensive backend + frontend verification. 14/14 pytest backend tests PASS covering security headers, CORS allowlist, password strength, password reset end-to-end, session rotation, account export/delete (GDPR-lite), client-errors, openapi.json public, structured JSON logging, and rate limit 429. Frontend: 404 page, /terms (10 sections + subtitle), /privacy (all 6 vendors), /forgot-password submit flow, forgot-password link on /login, skip-to-content link, static assets (robots/sitemap/favicon/manifest all 200), Profile Account section (export card + delete card), Export JSON download all verified. Regression: demo login → focus start/complete → XP awarded, mentor sessions list — all healthy after new @limiter decorators.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase35_hardening.py",
+    "/app/test_reports/pytest/iter9_phase35.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py CORS allow_origin_regex correctly excludes evil origins (verified: OPTIONS with Origin: https://evil.example.com returns no matching allow-origin). REACT_APP_BACKEND_URL host is added dynamically.",
+    "SecurityHeadersMiddleware emits all 7 required headers on EVERY response including 405s and 401s — verified via curl -sI.",
+    "Password reset flow: token is URL-safe 32-byte, 60min TTL, single-use, generic 200 response for enumeration protection. Session rotation on confirm invalidates all prior sessions. Verified end-to-end.",
+    "Session rotation on /auth/login uses delete_many({user_id}) BEFORE creating new session — race-free.",
+    "Rate limit 5/min per IP on /api/auth/login verified: 5 wrong attempts succeed, 6th returns 429 with correct JSON body {\"detail\":\"Rate limit exceeded\"}.",
+    "Account export /_norm() correctly redacts password_hash and session_token to '[REDACTED]', excludes MongoDB _id, and JSON-serializes datetime. Content-Disposition: attachment header present.",
+    "Account delete cascades across 9 collections (user_sessions, focus_sessions, daily_focus, user_achievements, user_stats, mentor_messages, mentor_sessions, study_plans, password_reset_tokens) plus users — verified /auth/me returns 401 after and login returns 401.",
+    "server.py file size 2244 lines — approaching the >700-line threshold noted in code review guidelines; not blocking Phase 3.5 but worth splitting in Phase 6 (auth.py, account.py, focus.py, mentor.py routers).",
+    "Two @app.on_event(startup/shutdown) still used — FastAPI deprecation warning (documented in iter8, unchanged).",
+    "server.py:2237 startup logs 'Index setup: {e}' as warning; consider elevating to structured EVENT log for observability parity."
+  ],
+  "updated_files": ["/app/backend/tests/test_phase35_hardening.py"],
+  "success_rate": {"backend": "100% (14/14 pytest)", "frontend": "100% (all Phase 3.5 test-ids present + flows working)"},
+  "test_credentials": "demo@cagrid.in / demo123 (verified). Password reset test uses MyStr0ngP@ss then reseeds back to demo123.",
+  "seed_data_creation": "Two throwaway signup users created for TestPasswordStrength (strong pw) and TestAccountDelete — both deleted at end of their tests. Two demo focus sessions started (both 1-minute), one completed (regression). No mentor chats consumed (Claude token budget preserved).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase 3.5 is stable. Test file backend/tests/test_phase35_hardening.py takes ~2:20 to run because it includes two forced 65s sleeps to respect the 5/min auth rate limit (once between the last body of login-heavy tests and the password-reset validation, once at the end of the 429 burn-in). If you re-run this file, use `-n 0` (serial) — the demo user is shared state and parallel workers will race on session rotation and rate-limit windows. Regression coverage: focus/start+complete verified with XP=+10 award and streak intact; mentor session listing 200. Emergent Google OAuth flow was NOT re-tested (out of scope per review request, already covered in earlier iterations). Frontend export download intercepted successfully — filename format 'cagrid-export-<user_id>.json'.",
+  "rca of the issue": "N/A — no bugs found. Three initial test failures were pure test-artifact issues fixed inside the test file: (1) email-casing mismatch (server lowercases per policy; test now asserts .lower()), (2) pytest-xdist parallel workers racing on the shared demo user's session (fixed by running with -n 0), (3) password-reset test's follow-up login attempts hit the 5/min ceiling from earlier login-heavy tests (fixed with a 65s cool-down sleep before the post-reset login assertions)."
+}

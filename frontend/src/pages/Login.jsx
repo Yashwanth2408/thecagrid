@@ -66,9 +66,16 @@ export default function Login() {
           <SubmitLink busy={busy} testId="login-submit">
             {busy ? "signing in" : "log in"}
           </SubmitLink>
-          <span className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62]">
-            demo · demo@cagrid.in / demo123
-          </span>
+          <Link
+            to="/forgot-password"
+            data-testid="link-to-forgot-password"
+            className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62] hover:text-[#8B5CF6] transition"
+          >
+            forgot?
+          </Link>
+        </div>
+        <div className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62]">
+          demo · demo@cagrid.in / demo123
         </div>
       </form>
       <div className="mt-12 pt-8 border-t border-white/[0.06]">

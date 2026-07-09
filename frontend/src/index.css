@@ -114,3 +114,69 @@ button:focus-visible, a:focus-visible, input:focus-visible {
     outline: 1px solid rgba(139, 92, 246, 0.7);
     outline-offset: 2px;
 }
+
+
+/* Extended focus-visible for a11y */
+[role="button"]:focus-visible,
+[tabindex="0"]:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+    outline: 1px solid rgba(139, 92, 246, 0.7);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+/* Screen-reader only utility (skip-to-content) */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+.focus\:not-sr-only:focus {
+    position: fixed;
+    width: auto;
+    height: auto;
+    padding: 0.5rem 1rem;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    white-space: normal;
+}
+
+/* Extra reduced-motion safety */
+@media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto !important; }
+    .grain { display: none; }
+}
+
+/* Mobile viewport safety — never let horizontal scroll happen */
+html, body {
+    overflow-x: hidden;
+}
+
+/* iOS Safari input zoom prevention */
+@media (max-width: 640px) {
+    input, textarea, select {
+        font-size: 16px !important;
+    }
+}
+
+/* Sonner toast override for brand feel */
+[data-sonner-toaster][data-theme="dark"] {
+    --normal-bg: #111114;
+    --normal-border: rgba(255,255,255,0.08);
+    --normal-text: #F2F2F2;
+    --success-bg: #111114;
+    --success-border: rgba(180,255,57,0.4);
+    --success-text: #F2F2F2;
+    --error-bg: #111114;
+    --error-border: rgba(255,107,107,0.5);
+    --error-text: #F2F2F2;
+}

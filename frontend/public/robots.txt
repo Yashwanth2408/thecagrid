@@ -1,0 +1,13 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /dashboard
+Disallow: /focus
+Disallow: /analytics
+Disallow: /profile
+Disallow: /mentor
+Disallow: /onboarding
+Disallow: /reset-password
+Disallow: /coming-soon
+
+Sitemap: /sitemap.xml

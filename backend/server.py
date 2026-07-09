@@ -6,6 +6,7 @@ Phase 2: Focus sessions + XP/level + streaks + badges + analytics
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Header
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
@@ -14,7 +15,7 @@ import secrets
 import math
 import random
 from pathlib import Path
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from typing import Optional, List
 from datetime import datetime, timezone, timedelta, date
 import asyncio
@@ -24,9 +25,12 @@ import pytz
 import re
 import json as _json
 from collections import defaultdict, deque
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
 from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
 from prompts import build_exam_prompt, build_practice_prompt, build_study_plan_prompt
+from common_passwords import is_common_password
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -52,6 +56,49 @@ EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/
 IST = pytz.timezone("Asia/Kolkata")
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 MENTOR_MODEL = ("anthropic", "claude-sonnet-4-5-20250929")
+
+# ---------- Structured JSON logging ----------
+def log_event(event: str, **fields):
+    payload = {"event": event, "ts": datetime.now(timezone.utc).isoformat(), **fields}
+    logger.info("EVENT " + _json.dumps(payload, default=str))
+
+# ---------- Rate limiter (slowapi) ----------
+def _rate_key(request: Request) -> str:
+    """Key rate limits by user_id when authenticated, else remote IP."""
+    tok = request.cookies.get("session_token")
+    if not tok:
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            tok = auth.split(" ", 1)[1].strip()
+    if tok:
+        return f"tok:{tok[:24]}"
+    # X-Forwarded-For for proxies
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return f"ip:{xff.split(',')[0].strip()}"
+    return f"ip:{request.client.host if request.client else 'unknown'}"
+
+limiter = Limiter(key_func=_rate_key, default_limits=["100/minute"])
+
+# ---------- Password strength ----------
+PASSWORD_MIN = 8
+PASSWORD_MAX = 200
+_letter_re = re.compile(r"[A-Za-z]")
+_digit_re = re.compile(r"\d")
+
+def validate_password_strength(pw: str) -> Optional[str]:
+    """Return an error string if the password is too weak, else None."""
+    if not pw or len(pw) < PASSWORD_MIN:
+        return f"Password must be at least {PASSWORD_MIN} characters"
+    if len(pw) > PASSWORD_MAX:
+        return f"Password must be at most {PASSWORD_MAX} characters"
+    if not _letter_re.search(pw):
+        return "Password must contain at least one letter"
+    if not _digit_re.search(pw):
+        return "Password must contain at least one number"
+    if is_common_password(pw):
+        return "Password is too common — pick something less predictable"
+    return None
 
 # In-memory rate limiter for /mentor/quick (10/min/user)
 _QUICK_RATE: dict = defaultdict(deque)
@@ -187,13 +234,31 @@ async def require_user(request: Request) -> dict:
 
 # ---------- Models ----------
 class SignupBody(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
     email: EmailStr
-    password: str = Field(min_length=6, max_length=200)
+    password: str = Field(min_length=8, max_length=200)
     name: str = Field(min_length=1, max_length=120)
 
 class LoginBody(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
     email: EmailStr
-    password: str
+    password: str = Field(min_length=1, max_length=200)
+
+class PasswordResetRequestBody(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    email: EmailStr
+
+class PasswordResetConfirmBody(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    token: str = Field(min_length=8, max_length=200)
+    new_password: str = Field(min_length=8, max_length=200)
+
+class ClientErrorBody(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    message: str = Field(min_length=1, max_length=2000)
+    stack: Optional[str] = Field(default=None, max_length=8000)
+    url: Optional[str] = Field(default=None, max_length=500)
+    user_agent: Optional[str] = Field(default=None, max_length=500)
 
 class OnboardingBody(BaseModel):
     journey_level: str
@@ -218,7 +283,11 @@ async def root():
 
 # ---------- Auth ----------
 @api_router.post("/auth/signup")
-async def auth_signup(body: SignupBody, response: Response):
+@limiter.limit("5/minute")
+async def auth_signup(body: SignupBody, request: Request, response: Response):
+    err = validate_password_strength(body.password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     existing = await db.users.find_one({"email": body.email.lower()}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -233,20 +302,34 @@ async def auth_signup(body: SignupBody, response: Response):
     }
     await db.users.insert_one(doc)
     await init_user_stats(user_id, unlock_founder=True)
+    # Session rotation: signup is a fresh account, no prior sessions to purge
     token = await create_session_for_user(user_id)
     set_session_cookie(response, token)
+    log_event("auth.signup.ok", user_id=user_id, email=doc["email"], ip=_client_ip(request))
     return {"user": sanitize_user(doc), "session_token": token}
 
 @api_router.post("/auth/login")
-async def auth_login(body: LoginBody, response: Response):
+@limiter.limit("5/minute")
+async def auth_login(body: LoginBody, request: Request, response: Response):
     user = await db.users.find_one({"email": body.email.lower()}, {"_id": 0})
     if not user or not user.get("password_hash"):
+        log_event("auth.login.fail", email=body.email.lower(), reason="no_user", ip=_client_ip(request))
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not verify_password(body.password, user["password_hash"]):
+        log_event("auth.login.fail", email=body.email.lower(), reason="bad_password", ip=_client_ip(request))
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    # Session rotation: invalidate all existing sessions for this user
+    await db.user_sessions.delete_many({"user_id": user["user_id"]})
     token = await create_session_for_user(user["user_id"])
     set_session_cookie(response, token)
+    log_event("auth.login.ok", user_id=user["user_id"], email=user["email"], ip=_client_ip(request))
     return {"user": sanitize_user(user), "session_token": token}
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 @api_router.post("/auth/google/session")
 async def auth_google_session(request: Request, response: Response, x_session_id: Optional[str] = Header(None, alias="X-Session-ID")):
@@ -303,9 +386,66 @@ async def auth_logout(request: Request, response: Response):
         auth_header = request.headers.get("authorization") or ""
         if auth_header.lower().startswith("bearer "):
             token = auth_header.split(" ", 1)[1].strip()
+    uid = None
     if token:
+        sess = await db.user_sessions.find_one({"session_token": token}, {"_id": 0, "user_id": 1})
+        uid = sess.get("user_id") if sess else None
         await db.user_sessions.delete_one({"session_token": token})
     response.delete_cookie("session_token", path="/", samesite="none", secure=True)
+    log_event("auth.logout", user_id=uid, ip=_client_ip(request))
+    return {"ok": True}
+
+
+# ---------- Password reset (stdout-delivered link) ----------
+@api_router.post("/auth/password-reset/request")
+@limiter.limit("5/minute")
+async def auth_password_reset_request(body: PasswordResetRequestBody, request: Request):
+    email = body.email.lower()
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    # Always return 200 to avoid email enumeration
+    if user and user.get("auth_provider") == "email":
+        token = secrets.token_urlsafe(32)
+        expires = now_utc() + timedelta(minutes=60)
+        await db.password_reset_tokens.insert_one({
+            "token": token, "user_id": user["user_id"], "email": email,
+            "expires_at": expires, "used": False, "created_at": now_utc(),
+        })
+        origin = request.headers.get("origin") or request.headers.get("referer") or ""
+        origin = origin.rstrip("/")
+        link = f"{origin}/reset-password?token={token}"
+        # TODO: Phase 4 — wire SendGrid or Amazon SES here.
+        logger.info(f"[PASSWORD RESET] email={email} link={link}")
+        log_event("password.reset.request", user_id=user["user_id"], email=email, ip=_client_ip(request))
+    else:
+        log_event("password.reset.request.miss", email=email, ip=_client_ip(request))
+    return {"ok": True, "message": "If that email exists, a reset link has been sent."}
+
+
+@api_router.post("/auth/password-reset/confirm")
+@limiter.limit("5/minute")
+async def auth_password_reset_confirm(body: PasswordResetConfirmBody, request: Request, response: Response):
+    err = validate_password_strength(body.new_password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    doc = await db.password_reset_tokens.find_one({"token": body.token}, {"_id": 0})
+    if not doc or doc.get("used"):
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+    expires = doc.get("expires_at")
+    if isinstance(expires, str):
+        expires = datetime.fromisoformat(expires)
+    if expires and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires and expires < now_utc():
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+    user_id = doc["user_id"]
+    await db.users.update_one({"user_id": user_id}, {"$set": {"password_hash": hash_password(body.new_password)}})
+    await db.password_reset_tokens.update_one({"token": body.token}, {"$set": {"used": True, "used_at": now_utc()}})
+    # Session rotation: kill all existing sessions after reset
+    await db.user_sessions.delete_many({"user_id": user_id})
+    # Auto-login user via new session
+    token = await create_session_for_user(user_id)
+    set_session_cookie(response, token)
+    log_event("password.reset.confirm", user_id=user_id, ip=_client_ip(request))
     return {"ok": True}
 
 @api_router.post("/onboarding")
@@ -490,6 +630,7 @@ async def check_and_unlock_badges(user_id: str, ctx: dict) -> List[dict]:
 
 # ---- Focus endpoints ----
 @api_router.post("/focus/start")
+@limiter.limit("30/minute")
 async def focus_start(body: FocusStart, request: Request):
     user = await require_user(request)
     user_id = user["user_id"]
@@ -530,6 +671,7 @@ async def focus_active(request: Request):
     }
 
 @api_router.post("/focus/cancel")
+@limiter.limit("30/minute")
 async def focus_cancel(body: FocusIdBody, request: Request):
     user = await require_user(request)
     s = await db.focus_sessions.find_one({"session_id": body.session_id, "user_id": user["user_id"]}, {"_id": 0})
@@ -548,6 +690,7 @@ async def focus_cancel(body: FocusIdBody, request: Request):
     return {"ok": True, "status": "cancelled"}
 
 @api_router.post("/focus/complete")
+@limiter.limit("30/minute")
 async def focus_complete(body: FocusIdBody, request: Request):
     user = await require_user(request)
     user_id = user["user_id"]
@@ -932,7 +1075,8 @@ def _priming_rows(seed_hour: int) -> List[dict]:
 _PULSE_CACHE = {"data": None, "at": None}
 
 @api_router.get("/live/pulse")
-async def live_pulse():
+@limiter.limit("60/minute")
+async def live_pulse(request: Request):
     now = now_utc()
     if _PULSE_CACHE["data"] and _PULSE_CACHE["at"] and (now - _PULSE_CACHE["at"]).total_seconds() < 10:
         return _PULSE_CACHE["data"]
@@ -1341,6 +1485,7 @@ async def _mentor_stream_and_save(user_id: str, session_id: Optional[str], messa
 
 
 @api_router.post("/mentor/chat")
+@limiter.limit("20/minute")
 async def mentor_chat(body: MentorChatBody, request: Request):
     user = await require_user(request)
     s = await db.mentor_sessions.find_one({"session_id": body.session_id, "user_id": user["user_id"]}, {"_id": 0})
@@ -1354,6 +1499,7 @@ async def mentor_chat(body: MentorChatBody, request: Request):
 
 
 @api_router.post("/mentor/quick")
+@limiter.limit("10/minute")
 async def mentor_quick(body: MentorQuickBody, request: Request):
     user = await require_user(request)
     if not check_quick_rate(user["user_id"]):
@@ -1464,6 +1610,7 @@ async def _study_plan_stream(user_id: str, exam_date: str, daily_hours: float, w
 
 
 @api_router.post("/study-plan/generate")
+@limiter.limit("5/hour")
 async def study_plan_generate(body: StudyPlanBody, request: Request):
     """Kick off a study-plan generation job. Returns immediately with {job_id}.
     Client polls GET /study-plan/status/{job_id} every ~2s until status=done|error.
@@ -1595,6 +1742,105 @@ async def study_plan_archive(plan_id: str, request: Request):
     )
     if r.matched_count == 0:
         raise HTTPException(404, "Not found")
+    return {"ok": True}
+
+
+# ============================================================
+# ACCOUNT DATA RIGHTS (GDPR-lite)
+# ============================================================
+
+@api_router.get("/account/export")
+@limiter.limit("5/hour")
+async def account_export(request: Request):
+    user = await require_user(request)
+    uid = user["user_id"]
+
+    def _norm(docs: list) -> list:
+        out = []
+        for d in docs:
+            row = {}
+            for k, v in d.items():
+                if k == "_id":
+                    continue
+                if k in ("password_hash", "session_token"):
+                    row[k] = "[REDACTED]"
+                elif isinstance(v, datetime):
+                    row[k] = v.isoformat()
+                else:
+                    row[k] = v
+            out.append(row)
+        return out
+
+    profile = await db.users.find_one({"user_id": uid}) or {}
+    sessions = await db.user_sessions.find({"user_id": uid}).to_list(1000)
+    stats = await db.user_stats.find_one({"user_id": uid}) or {}
+    focus_sessions = await db.focus_sessions.find({"user_id": uid}).to_list(10000)
+    daily_focus = await db.daily_focus.find({"user_id": uid}).to_list(10000)
+    achievements = await db.user_achievements.find({"user_id": uid}).to_list(1000)
+    mentor_sessions = await db.mentor_sessions.find({"user_id": uid}).to_list(1000)
+    mentor_messages = await db.mentor_messages.find({"user_id": uid}).to_list(10000)
+    study_plans = await db.study_plans.find({"user_id": uid}).to_list(1000)
+
+    payload = {
+        "exported_at": now_utc().isoformat(),
+        "user_id": uid,
+        "profile": _norm([profile])[0] if profile else None,
+        "user_stats": _norm([stats])[0] if stats else None,
+        "sessions_redacted": _norm(sessions),
+        "focus_sessions": _norm(focus_sessions),
+        "daily_focus": _norm(daily_focus),
+        "achievements": _norm(achievements),
+        "mentor_sessions": _norm(mentor_sessions),
+        "mentor_messages": _norm(mentor_messages),
+        "study_plans": _norm(study_plans),
+    }
+    log_event("account.export", user_id=uid, ip=_client_ip(request))
+    filename = f"cagrid-export-{uid}-{now_utc().strftime('%Y%m%d')}.json"
+    return JSONResponse(
+        content=payload,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@api_router.delete("/account/delete")
+@limiter.limit("3/hour")
+async def account_delete(request: Request, response: Response):
+    user = await require_user(request)
+    uid = user["user_id"]
+    # Cascade
+    await db.user_sessions.delete_many({"user_id": uid})
+    await db.focus_sessions.delete_many({"user_id": uid})
+    await db.daily_focus.delete_many({"user_id": uid})
+    await db.user_achievements.delete_many({"user_id": uid})
+    await db.user_stats.delete_many({"user_id": uid})
+    await db.mentor_messages.delete_many({"user_id": uid})
+    await db.mentor_sessions.delete_many({"user_id": uid})
+    await db.study_plans.delete_many({"user_id": uid})
+    await db.password_reset_tokens.delete_many({"user_id": uid})
+    await db.users.delete_one({"user_id": uid})
+    response.delete_cookie("session_token", path="/", samesite="none", secure=True)
+    log_event("account.delete", user_id=uid, ip=_client_ip(request))
+    return {"ok": True}
+
+
+# ============================================================
+# CLIENT ERROR REPORTING
+# ============================================================
+
+@api_router.post("/client-errors")
+@limiter.limit("10/minute")
+async def client_errors(body: ClientErrorBody, request: Request):
+    """Frontend ErrorBoundary reports here. Rate-limited by IP to prevent log spam."""
+    user = await get_current_user(request)
+    log_event(
+        "client.error",
+        user_id=user["user_id"] if user else None,
+        message=body.message[:500],
+        url=(body.url or "")[:200],
+        user_agent=(body.user_agent or request.headers.get("user-agent", ""))[:200],
+        ip=_client_ip(request),
+        stack=(body.stack or "")[:2000],
+    )
     return {"ok": True}
 
 
@@ -1897,13 +2143,73 @@ async def seed_endpoint():
 
 # ---------- App wiring ----------
 app.include_router(api_router)
+
+# --- Rate limiter wiring ---
+app.state.limiter = limiter
+
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    log_event("ratelimit.exceeded", path=request.url.path, ip=_client_ip(request))
+    return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+
+# --- CORS: locked allowlist ---
+_frontend_url = os.environ.get("REACT_APP_BACKEND_URL", "") or ""
+_frontend_host = ""
+if _frontend_url:
+    m = re.match(r"^(https?://[^/]+)", _frontend_url)
+    _frontend_host = re.escape(m.group(1)) if m else ""
+_origin_regex_parts = [
+    r"https://[a-z0-9-]+\.preview\.emergentagent\.com",
+    r"https://[a-z0-9-]+\.internal\.preview\.emergentagent\.com",
+    r"http://localhost(:\d+)?",
+    r"http://127\.0\.0\.1(:\d+)?",
+]
+if _frontend_host:
+    _origin_regex_parts.append(_frontend_host)
+CORS_ORIGIN_REGEX = r"^(" + "|".join(_origin_regex_parts) + r")$"
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origin_regex=".*",
-    allow_methods=["*"],
+    allow_origin_regex=CORS_ORIGIN_REGEX,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+# --- Security headers middleware ---
+CSP_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://assets.emergent.sh "
+    "https://*.i.posthog.com https://us.i.posthog.com; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "img-src 'self' data: blob: https:; "
+    "font-src 'self' https://fonts.gstatic.com data:; "
+    "connect-src 'self' https: wss:; "
+    "media-src 'self' https: blob:; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "object-src 'none'"
+)
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+        )
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups"
+        # Only apply CSP to HTML/JSON responses (avoid clobbering static)
+        response.headers.setdefault("Content-Security-Policy", CSP_POLICY)
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 @app.on_event("startup")
 async def startup():
@@ -1926,6 +2232,8 @@ async def startup():
         await db.mentor_messages.create_index("message_id", unique=True)
         await db.study_plans.create_index([("user_id", 1), ("status", 1)])
         await db.study_plans.create_index("plan_id", unique=True)
+        await db.password_reset_tokens.create_index("token", unique=True)
+        await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     except Exception as e:
         logger.warning(f"Index setup: {e}")
     await run_seed()
