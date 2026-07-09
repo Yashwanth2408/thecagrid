@@ -116,3 +116,35 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 ### Tests
 - Backend: 30/30 pytest pass (15 Phase 1 regression + 15 Phase 2)
 - Frontend: all Phase 2 pages render for demo user; Landing critical Hero prop bug caught and fixed by testing agent
+
+## Phase 3 — AI CA Mentor + Micro-Toast (2026-07-09)
+
+### Backend
+- `emergentintegrations` LlmChat streaming with **claude-sonnet-4-5-20250929**, per-session instances, SSE responses
+- New collections: `mentor_sessions`, `mentor_messages`, `study_plans`
+- New endpoints: `POST /mentor/sessions`, `GET /mentor/sessions[/id]`, `DELETE /mentor/sessions/id`, `POST /mentor/chat` (SSE), `POST /mentor/quick` (SSE, 10/min in-memory rate limit), `POST /study-plan/generate` (structured JSON via LLM), `GET /study-plan/active`, `POST /study-plan/{id}/archive`
+- System prompts locked in `/app/backend/prompts.py` (Exam + Practice + Study Plan JSON schema)
+- Citations parsed via regex from `SOURCES:` block, stored on `mentor_messages.citations`
+- Demo user seeded with 2 mentor sessions (Ind AS 115 + GST exports, pre-authored assistant content w/ proper citations) + 1 active 12-week study plan biased toward Advanced Accounts + Costing
+
+### Frontend
+- **`/mentor`** — sidebar (sessions + `[ + NEW ]` + `[ STUDY PLAN → ]` link) + chat pane with mode toggle (locked after first msg), streaming assistant bubble w/ blinking violet caret, markdown rendering via `react-markdown + remark-gfm`, SOURCES card w/ violet border-left
+- **`/mentor/study-plan`** — editorial form or 12-week rendered plan with weekly dividers, day rows (mono date + italic subject + task bullets + hours badge), regenerate/archive
+- **Dashboard `NextUpCard`** — real quick-ask input, creates session on Enter and navigates to `/mentor?session=<id>`
+- **Persistent `MentorDrawer`** — floating violet Sparkles button bottom-right on `/dashboard`, `/focus`, `/analytics`, `/profile`. Drawer slides in right, glass, ~420px, shares MentorChat component. State (open + sessionId + mode) persisted to `localStorage.cagrid.drawer`
+- **`MicroToast`** — Toast provider at app root; fires on focus completion (500ms after `/focus/complete` resolves) — pulls fresh `/live/pulse.active_now` and shows "You're on the grid." + mono `NOW FOCUSED · N ASPIRANTS`. Auto-dismiss 4.5s. Does NOT fire on cancel.
+- **Sidebar** — added Mentor entry (`Sparkles` icon) between Focus and Analytics
+- **Voice** — SpeechRecognition (mic) + SpeechSynthesis (speak) toggles, gracefully hidden on unsupported browsers
+
+### Test results
+- Backend: **49/49** pytest (30 Phase 1+2 regression + 19 Phase 3 new)
+- Frontend: **all** Phase 3 review scenarios pass
+- Real Claude streaming verified end-to-end; rate limit + SSE headers + citation parsing all green
+
+### Deferred (all OPTIONAL per iteration 4 testing agent)
+- Split `server.py` (now 1663 lines) into `auth/focus/mentor/study_plan/seed/pulse/stats` modules
+- Migrate rate-limit dict to Redis for multi-worker deployment
+- Abort in-flight LLM stream on client disconnect (credit saver)
+- Study-plan JSON parse fallback (regex-extract first `{...}` block)
+- Migrate deprecated `@on_event` → FastAPI lifespan
+- Wire `require_user` via `Depends`
