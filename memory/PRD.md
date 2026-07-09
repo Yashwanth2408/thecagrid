@@ -86,3 +86,33 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 - Custom cursor: dot + trailing ring with spring lag, magnetic pull on `[data-magnetic]`, mono labels via `[data-cursor-label]`, auto-disables on touch / reduced-motion
 - Cursor-reactive dot grid, film-grain SVG noise overlay, Framer AnimatePresence route transitions
 - All Phase 1 functionality preserved: 15/15 backend + 13/13 frontend regression tests pass
+
+## Phase 2 — Retention Core (2026-07-09)
+### Backend
+- New collections: focus_sessions, user_stats, achievements (20 badges), user_achievements, daily_focus
+- XP formula (locked): 1 XP/min + 10 completion + 20 first-of-day + 50 new-streak-best. Level = floor(sqrt(xp/50)) + 1
+- Streak logic in IST (Asia/Kolkata) with weekly Monday-reset freeze
+- Endpoints: /focus/start, /focus/complete, /focus/cancel, /focus/active, /focus/history, /stats/me, /stats/heatmap, /stats/weekly, /stats/monthly, /stats/subjects, /stats/hour-of-day, /achievements, /dashboard, /live/pulse (public, 10s cache, priming blend when data thin)
+- Demo user seeded with ~40 sessions across 30 days, 14-day active streak, ~34.6h total focus, 10 badges unlocked (Founder + First Focus + Hour One + 25-Hour Club + Streak 3/7 + Night Owl + Weekend Warrior + Polymath + Level 5)
+- City field added to users; onboarding accepts optional `city`
+- Fresh signup auto-unlocks founder_grid (founder period)
+
+### Frontend
+- **Dashboard** (`/dashboard`): 9-card asymmetric bento — Continue (last subject resume), Streak (acid green flame, current + best), Today (violet radial ring), Level (XP bar), 90-day heatmap, Badges (latest 3 + count), Top Subjects, Next Up (AI Mentor teaser), Regulatory Radar (Phase 4 teaser). All animated in, no page spinner (per-card shimmer).
+- **Focus** (`/focus`): editorial idle config (duration chips, subject chips, ambient rain/lofi/cafe/none, START text-link CTA). Fullscreen active mode with massive Instrument Serif countdown, thin violet ring, ambient audio, mute toggle, cancel-confirm modal. Persists across refresh via `/focus/active`. Completion modal with XP + streak + level + new-badge unlocks + confetti burst.
+- **Analytics** (`/analytics`): 365-day heatmap, 30-day area chart, hour-of-day bars, subject stacked bar with legend, records column (longest streak / longest session / total focus)
+- **Profile** (`/profile`): big avatar + editorial name, 4 filter tabs (ALL/UNLOCKED/LOCKED/LEGENDARY), 20-badge grid with legendary glow
+- **Landing** (`/`): live-pulse-bound ticker (12 rows, /api/live/pulse refresh every 12s) + generative dot grid intensity scaled to active_now + LIVE UPDATED Xs AGO caption
+- **Onboarding**: optional city input in goal step (data-testid `onb-city`)
+- Top nav: real streak (acid green) + level badge (violet), refreshes after focus completion
+
+### Phase 4 backlog note
+- Rate-limit `/api/live/pulse` (public endpoint)
+- Split server.py into modules (auth, focus, stats, achievements, pulse, seed)
+- Migrate deprecated @on_event to lifespan context manager
+- Wire require_user via FastAPI Depends
+- Replace in-memory pulse cache with Redis if scaled
+
+### Tests
+- Backend: 30/30 pytest pass (15 Phase 1 regression + 15 Phase 2)
+- Frontend: all Phase 2 pages render for demo user; Landing critical Hero prop bug caught and fixed by testing agent

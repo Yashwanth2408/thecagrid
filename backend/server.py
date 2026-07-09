@@ -972,6 +972,12 @@ async def live_pulse():
         active_now += prim["active_now"]
         streaks_at_risk += prim["streaks_at_risk"]
         completed_today += prim["sessions_completed_today"]
+    else:
+        # Even during real activity, keep active_now floor so ticker header doesn't read "0 online"
+        if active_now == 0:
+            active_now = prim["active_now"]
+        if streaks_at_risk == 0 and now_ist().hour >= 20:
+            streaks_at_risk = prim["streaks_at_risk"]
 
     # Fill recent to 12 with priming rows if short
     if len(recent_rows) < 12:
@@ -1111,9 +1117,10 @@ async def seed_demo_focus_data(user_id: str):
         upsert=True,
     )
 
-    # Unlock the specified badges
+    # Unlock the specified badges (level_5 auto-included since demo is level 8)
     for bid in ["first_focus", "hour_one", "streak_3", "streak_7", "hour_25",
-                "night_owl", "weekend_warrior", "polymath", "founder_grid"]:
+                "night_owl", "weekend_warrior", "polymath", "founder_grid",
+                "level_5"]:
         await unlock_badge(user_id, bid)
 
     logger.info(f"Seeded demo focus data: {len(session_docs)} sessions, {total_minutes} min, xp={total_xp}")

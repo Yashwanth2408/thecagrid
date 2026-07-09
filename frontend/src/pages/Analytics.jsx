@@ -91,8 +91,8 @@ export default function Analytics() {
         <div className="grid grid-cols-12 gap-5">
           <CardShell className="col-span-12 lg:col-span-7" testId="analytics-weekly">
             <Eyebrow>[ last 30 days · daily minutes ]</Eyebrow>
-            <div className="mt-6 h-[240px]">
-              <ResponsiveContainer width="100%" height="100%">
+            <div className="mt-6 h-[240px] min-h-[240px]">
+              <ResponsiveContainer width="100%" height="100%" minHeight={200}>
                 <AreaChart data={monthly || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <defs>
                     <linearGradient id="violetGrad" x1="0" y1="0" x2="0" y2="1">
@@ -138,8 +138,8 @@ export default function Analytics() {
               {peak && peak.minutes > 0 ? `PEAK · ${peak.hour}:00 · ${peak.minutes} MIN` : "—"}
             </div>
           </div>
-          <div className="mt-6 h-[220px]">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="mt-6 h-[220px] min-h-[220px]">
+            <ResponsiveContainer width="100%" height="100%" minHeight={180}>
               <BarChart data={hod || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                 <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} />
                 <XAxis dataKey="hour" tick={{ fill: "#5A5A62", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
