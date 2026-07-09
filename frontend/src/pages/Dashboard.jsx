@@ -266,17 +266,47 @@ function TopSubjectsCard({ subjects }) {
 }
 
 function NextUpCard() {
+  const navigate = useNavigate();
+  const [q, setQ] = useState("");
+  const send = async () => {
+    const text = q.trim();
+    if (!text) return;
+    try {
+      const r = await api.post("/mentor/sessions", { mode: "exam", initial_message: text });
+      navigate(`/mentor?session=${r.data.session_id}&auto=${encodeURIComponent(text)}`);
+    } catch {}
+  };
   return (
     <Card className="col-span-12 lg:col-span-4 min-h-[220px] flex flex-col justify-between" testId="dashboard-next-up" radius={24}>
-      <Eyebrow>[ up next ]</Eyebrow>
+      <div className="flex items-center gap-2">
+        <span className="relative flex w-2 h-2">
+          <span className="absolute inset-0 rounded-full bg-[#B4FF39] animate-ping opacity-70" />
+          <span className="relative inline-flex w-2 h-2 rounded-full bg-[#B4FF39]" />
+        </span>
+        <span className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#F2F2F2]">MENTOR · READY</span>
+      </div>
       <div>
-        <div className="font-display italic text-[32px] leading-[1] text-[#F2F2F2]">AI Mentor.</div>
-        <div className="mt-3 text-[14px] text-[#8B8B92] leading-[1.5]">
-          Ask any concept at 2am. It cites the section. It doesn't judge.
+        <div className="font-display italic text-[32px] leading-[1] text-[#F2F2F2]">Ask the grid mentor.</div>
+        <div className="mt-3 text-[13px] text-[#8B8B92] leading-[1.5]">
+          Claude Sonnet 4.5. Sources cited. No panic.
         </div>
       </div>
-      <div className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#8B5CF6]">
-        COMING · PHASE 03
+      <div className="flex items-center gap-3 border-t border-white/[0.06] pt-3">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && send()}
+          placeholder="ask…"
+          className="flex-1 bg-transparent border-0 focus:outline-none px-0 py-1 text-[13px] text-[#F2F2F2] placeholder:text-[#5A5A62] font-mono uppercase tracking-[0.22em]"
+          data-testid="dashboard-mentor-input"
+        />
+        <button
+          onClick={send}
+          className="font-mono uppercase tracking-[0.22em] text-[11px] text-[#8B5CF6] hover:text-[#F2F2F2] transition"
+          data-testid="dashboard-mentor-send"
+        >
+          [ →  ]
+        </button>
       </div>
     </Card>
   );

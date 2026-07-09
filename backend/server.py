@@ -20,6 +20,12 @@ from datetime import datetime, timezone, timedelta, date
 import httpx
 import bcrypt
 import pytz
+import re
+import json as _json
+from collections import defaultdict, deque
+from fastapi.responses import StreamingResponse
+from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+from prompts import build_exam_prompt, build_practice_prompt, build_study_plan_prompt
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -43,6 +49,20 @@ logger = logging.getLogger(__name__)
 SESSION_TTL_DAYS = 7
 EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 IST = pytz.timezone("Asia/Kolkata")
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+MENTOR_MODEL = ("anthropic", "claude-sonnet-4-5-20250929")
+
+# In-memory rate limiter for /mentor/quick (10/min/user)
+_QUICK_RATE: dict = defaultdict(deque)
+def check_quick_rate(user_id: str) -> bool:
+    now = datetime.now(timezone.utc).timestamp()
+    q = _QUICK_RATE[user_id]
+    while q and now - q[0] > 60:
+        q.popleft()
+    if len(q) >= 10:
+        return False
+    q.append(now)
+    return True
 
 # ---------- Utils ----------
 def now_utc() -> datetime:
@@ -997,6 +1017,316 @@ async def live_pulse():
     return payload
 
 # ============================================================
+# PHASE 3 — Mentor (LLM) + Study Plan
+# ============================================================
+SOURCES_RE = re.compile(r"SOURCES:\s*(.+?)(?:\n\n|$)", re.DOTALL | re.IGNORECASE)
+CITATION_LINE_RE = re.compile(
+    r"[-•]\s*(?:Act/Standard|Act|Standard|Circular):\s*(?P<act>[^\n,]+)(?:,?\s*(?:Section|Section/Para|Para|§):\s*(?P<sec>[^\n]+))?"
+)
+
+
+def parse_citations(text: str) -> list:
+    """Extract citations from the SOURCES block if present."""
+    m = SOURCES_RE.search(text or "")
+    if not m:
+        return []
+    block = m.group(1)
+    out = []
+    for line in block.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        cm = CITATION_LINE_RE.search(line)
+        if cm:
+            out.append({
+                "act": cm.group("act").strip(),
+                "section": (cm.group("sec") or "").strip() or None,
+                "note": None,
+            })
+        else:
+            # Fallback: simple "- something — details"
+            if line.startswith(("-", "•")):
+                trimmed = line.lstrip("-• ").strip()
+                out.append({"act": trimmed, "section": None, "note": None})
+    return out
+
+
+async def build_user_ctx(user_id: str) -> dict:
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0}) or {}
+    stats = await db.user_stats.find_one({"user_id": user_id}, {"_id": 0}) or {}
+    pipe = [
+        {"$match": {"user_id": user_id, "status": "completed"}},
+        {"$group": {"_id": "$subject", "m": {"$sum": {"$divide": ["$actual_duration_seconds", 60]}}}},
+        {"$sort": {"m": -1}}, {"$limit": 3},
+    ]
+    tops = [d["_id"] for d in await db.focus_sessions.aggregate(pipe).to_list(3)]
+    return {
+        "level": user.get("journey_level") or "Foundation",
+        "daily_goal_minutes": user.get("daily_goal_minutes") or 180,
+        "current_streak": stats.get("current_streak") or 0,
+        "top_subjects": tops or (user.get("subjects") or ["General"])[:3],
+    }
+
+
+def default_mode(level: str) -> str:
+    return "practice" if level in ("Articleship", "Qualified") else "exam"
+
+
+class MentorSessionCreate(BaseModel):
+    mode: str = Field(default="exam")
+    initial_message: Optional[str] = Field(default=None, max_length=4000)
+
+
+class MentorChatBody(BaseModel):
+    session_id: str
+    message: str = Field(min_length=1, max_length=8000)
+
+
+class MentorQuickBody(BaseModel):
+    message: str = Field(min_length=1, max_length=8000)
+    mode: Optional[str] = None
+
+
+class StudyPlanBody(BaseModel):
+    exam_date: str  # YYYY-MM-DD
+    daily_hours: float = Field(ge=0.5, le=14)
+    weak_areas: List[str] = []
+
+
+@api_router.post("/mentor/sessions")
+async def mentor_create_session(body: MentorSessionCreate, request: Request):
+    user = await require_user(request)
+    mode = body.mode if body.mode in ("exam", "practice") else default_mode(user.get("journey_level") or "Foundation")
+    title = (body.initial_message or "New session").strip()[:60] or "New session"
+    session_id = f"mses_{uuid.uuid4().hex[:14]}"
+    doc = {
+        "session_id": session_id, "user_id": user["user_id"], "title": title,
+        "mode": mode, "created_at": now_utc(), "updated_at": now_utc(),
+        "message_count": 0, "deleted": False,
+    }
+    await db.mentor_sessions.insert_one(doc)
+    return {"session_id": session_id, "title": title, "mode": mode,
+            "created_at": doc["created_at"].isoformat()}
+
+
+@api_router.get("/mentor/sessions")
+async def mentor_list_sessions(request: Request):
+    user = await require_user(request)
+    docs = await db.mentor_sessions.find(
+        {"user_id": user["user_id"], "deleted": {"$ne": True}}, {"_id": 0}
+    ).sort("updated_at", -1).to_list(200)
+    for d in docs:
+        for k in ("created_at", "updated_at"):
+            v = d.get(k)
+            if isinstance(v, datetime):
+                d[k] = v.isoformat()
+    return docs
+
+
+@api_router.get("/mentor/sessions/{session_id}")
+async def mentor_get_session(session_id: str, request: Request):
+    user = await require_user(request)
+    s = await db.mentor_sessions.find_one({"session_id": session_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not s or s.get("deleted"):
+        raise HTTPException(404, "Not found")
+    msgs = await db.mentor_messages.find(
+        {"session_id": session_id, "user_id": user["user_id"]}, {"_id": 0}
+    ).sort("created_at", 1).to_list(2000)
+    for m in msgs:
+        v = m.get("created_at")
+        if isinstance(v, datetime):
+            m["created_at"] = v.isoformat()
+    for k in ("created_at", "updated_at"):
+        v = s.get(k)
+        if isinstance(v, datetime):
+            s[k] = v.isoformat()
+    return {"session": s, "messages": msgs}
+
+
+@api_router.delete("/mentor/sessions/{session_id}")
+async def mentor_delete_session(session_id: str, request: Request):
+    user = await require_user(request)
+    r = await db.mentor_sessions.update_one(
+        {"session_id": session_id, "user_id": user["user_id"]},
+        {"$set": {"deleted": True, "updated_at": now_utc()}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Not found")
+    return {"ok": True}
+
+
+async def _sse_wrap(gen):
+    """Convert an async generator of events (dicts) into SSE-formatted bytes."""
+    async for ev in gen:
+        yield f"data: {_json.dumps(ev)}\n\n".encode("utf-8")
+
+
+async def _mentor_stream_and_save(user_id: str, session_id: Optional[str], message: str, mode: str):
+    """Common streamer used by /mentor/chat and /mentor/quick."""
+    ctx = await build_user_ctx(user_id)
+    system_prompt = build_practice_prompt(ctx) if mode == "practice" else build_exam_prompt(ctx)
+
+    # Persist user message first (only if session-bound)
+    if session_id:
+        msg_id_user = f"mmsg_{uuid.uuid4().hex[:14]}"
+        await db.mentor_messages.insert_one({
+            "message_id": msg_id_user, "session_id": session_id, "user_id": user_id,
+            "role": "user", "content": message, "citations": None, "tokens_used": None,
+            "created_at": now_utc(),
+        })
+        # Auto-title if session is still default
+        s = await db.mentor_sessions.find_one({"session_id": session_id}, {"_id": 0})
+        if s and (s.get("title") in ("New session", None, "")):
+            new_title = message.strip()[:48]
+            await db.mentor_sessions.update_one({"session_id": session_id}, {"$set": {"title": new_title}})
+
+    # Fresh LlmChat per session
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=session_id or f"quick_{uuid.uuid4().hex[:10]}",
+        system_message=system_prompt,
+    ).with_model(*MENTOR_MODEL)
+
+    yield {"type": "start"}
+    full = []
+    try:
+        async for ev in chat.stream_message(UserMessage(text=message)):
+            if isinstance(ev, TextDelta):
+                full.append(ev.content)
+                yield {"type": "delta", "content": ev.content}
+            elif isinstance(ev, StreamDone):
+                break
+    except Exception as e:
+        logger.exception("mentor stream error")
+        yield {"type": "error", "error": str(e)}
+        return
+
+    full_text = "".join(full)
+    citations = parse_citations(full_text)
+    if citations:
+        yield {"type": "citations", "citations": citations}
+
+    msg_id_ai = f"mmsg_{uuid.uuid4().hex[:14]}"
+    if session_id:
+        await db.mentor_messages.insert_one({
+            "message_id": msg_id_ai, "session_id": session_id, "user_id": user_id,
+            "role": "assistant", "content": full_text, "citations": citations or None,
+            "tokens_used": None, "created_at": now_utc(),
+        })
+        await db.mentor_sessions.update_one(
+            {"session_id": session_id},
+            {"$set": {"updated_at": now_utc()}, "$inc": {"message_count": 2}},
+        )
+    yield {"type": "done", "message_id": msg_id_ai, "tokens_used": None}
+
+
+@api_router.post("/mentor/chat")
+async def mentor_chat(body: MentorChatBody, request: Request):
+    user = await require_user(request)
+    s = await db.mentor_sessions.find_one({"session_id": body.session_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not s or s.get("deleted"):
+        raise HTTPException(404, "Session not found")
+    return StreamingResponse(
+        _sse_wrap(_mentor_stream_and_save(user["user_id"], body.session_id, body.message, s.get("mode") or "exam")),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+@api_router.post("/mentor/quick")
+async def mentor_quick(body: MentorQuickBody, request: Request):
+    user = await require_user(request)
+    if not check_quick_rate(user["user_id"]):
+        raise HTTPException(429, "Rate limit exceeded")
+    mode = body.mode if body.mode in ("exam", "practice") else default_mode(user.get("journey_level") or "Foundation")
+    return StreamingResponse(
+        _sse_wrap(_mentor_stream_and_save(user["user_id"], None, body.message, mode)),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+# ---- Study plan ----
+@api_router.post("/study-plan/generate")
+async def study_plan_generate(body: StudyPlanBody, request: Request):
+    user = await require_user(request)
+    ctx = await build_user_ctx(user["user_id"])
+    try:
+        exam_dt = datetime.strptime(body.exam_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(400, "exam_date must be YYYY-MM-DD")
+    days_until = max(1, (exam_dt - now_ist().date()).days)
+    prompt = build_study_plan_prompt(ctx, body.exam_date, days_until, body.daily_hours, body.weak_areas)
+
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"plan_{uuid.uuid4().hex[:10]}",
+        system_message="You produce concise, valid JSON study plans. Output ONLY JSON, no prose.",
+    ).with_model(*MENTOR_MODEL)
+
+    chunks = []
+    try:
+        async for ev in chat.stream_message(UserMessage(text=prompt)):
+            if isinstance(ev, TextDelta):
+                chunks.append(ev.content)
+            elif isinstance(ev, StreamDone):
+                break
+    except Exception as e:
+        logger.exception("study plan generation failed")
+        raise HTTPException(502, f"LLM failed: {e}")
+
+    text = "".join(chunks).strip()
+    # strip ```json fences if present
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        plan_json = _json.loads(text)
+    except Exception as e:
+        raise HTTPException(502, f"LLM returned non-JSON: {e}")
+
+    plan_id = f"plan_{uuid.uuid4().hex[:14]}"
+    # Archive previous active plans
+    await db.study_plans.update_many(
+        {"user_id": user["user_id"], "status": "active"},
+        {"$set": {"status": "archived"}},
+    )
+    doc = {
+        "plan_id": plan_id, "user_id": user["user_id"],
+        "exam_date": body.exam_date, "daily_hours": body.daily_hours,
+        "weak_areas": body.weak_areas, "plan_json": plan_json,
+        "created_at": now_utc(), "status": "active",
+    }
+    await db.study_plans.insert_one(doc)
+    return {**doc, "_id": None, "created_at": doc["created_at"].isoformat()}
+
+
+@api_router.get("/study-plan/active")
+async def study_plan_active(request: Request):
+    user = await require_user(request)
+    doc = await db.study_plans.find_one(
+        {"user_id": user["user_id"], "status": "active"}, {"_id": 0}
+    )
+    if not doc:
+        return None
+    if isinstance(doc.get("created_at"), datetime):
+        doc["created_at"] = doc["created_at"].isoformat()
+    return doc
+
+
+@api_router.post("/study-plan/{plan_id}/archive")
+async def study_plan_archive(plan_id: str, request: Request):
+    user = await require_user(request)
+    r = await db.study_plans.update_one(
+        {"plan_id": plan_id, "user_id": user["user_id"]},
+        {"$set": {"status": "archived"}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Not found")
+    return {"ok": True}
+
+
+# ============================================================
 # SEED
 # ============================================================
 
@@ -1125,6 +1455,126 @@ async def seed_demo_focus_data(user_id: str):
 
     logger.info(f"Seeded demo focus data: {len(session_docs)} sessions, {total_minutes} min, xp={total_xp}")
 
+async def seed_demo_mentor_and_plan(user_id: str):
+    """Idempotent seed of 2 mentor sessions + 1 active study plan for demo."""
+    # Wipe previous demo mentor content
+    await db.mentor_sessions.delete_many({"user_id": user_id})
+    await db.mentor_messages.delete_many({"user_id": user_id})
+    await db.study_plans.delete_many({"user_id": user_id})
+
+    now = now_utc()
+    # Session 1
+    s1 = f"mses_{uuid.uuid4().hex[:14]}"
+    await db.mentor_sessions.insert_one({
+        "session_id": s1, "user_id": user_id,
+        "title": "Explain Ind AS 115 revenue recognition",
+        "mode": "exam",
+        "created_at": now - timedelta(days=2), "updated_at": now - timedelta(days=2, hours=-1),
+        "message_count": 4, "deleted": False,
+    })
+    m1 = [
+        ("user", "Explain Ind AS 115 in a way I can retain for the exam.", None),
+        ("assistant",
+         "**Ind AS 115 · Revenue from Contracts with Customers** — the five-step model:\n\n"
+         "1. **Identify the contract** — enforceable rights + payment terms + commercial substance.\n"
+         "2. **Identify performance obligations** — distinct goods/services.\n"
+         "3. **Determine transaction price** — fixed + variable consideration (constrained).\n"
+         "4. **Allocate the price** — to each obligation on standalone selling price basis.\n"
+         "5. **Recognise revenue** — when (or as) each obligation is satisfied.\n\n"
+         "Key rule: revenue follows the *transfer of control*, not billing or cash. Point-in-time vs. over-time depends on whether the customer benefits as work is performed.\n\n"
+         "**Exam trap** — bundled contracts (SaaS + implementation): usually two obligations, allocate price.\n\n"
+         "SOURCES:\n"
+         "- Act/Standard: Ind AS 115\n"
+         "- Section/Para: Para 9-13 (Identify contract), Para 22-30 (Obligations), Para 46-72 (Transaction price)\n",
+         [
+             {"act": "Ind AS 115", "section": "Para 9-13", "note": "Identify contract"},
+             {"act": "Ind AS 115", "section": "Para 22-30", "note": "Performance obligations"},
+             {"act": "Ind AS 115", "section": "Para 46-72", "note": "Transaction price"},
+         ]),
+        ("user", "What's the practical difference vs the old AS 9?", None),
+        ("assistant",
+         "AS 9 was **risks-and-rewards** based; Ind AS 115 is **control-based**. In AS 9, revenue was recognised when significant risks and rewards transferred — a proxy. In Ind AS 115, revenue moves when control transfers, judged by: ability to direct use + obtain economic benefits. This changes timing for bill-and-hold, consignment sales, and construction contracts (Ind AS 115 replaces AS 7 for construction).\n\n"
+         "SOURCES:\n"
+         "- Act/Standard: Ind AS 115 vs AS 9\n"
+         "- Section/Para: Ind AS 115 Para 31 (Control transfer)\n",
+         [{"act": "Ind AS 115", "section": "Para 31", "note": "Control transfer definition"}]),
+    ]
+    for role, content, cits in m1:
+        await db.mentor_messages.insert_one({
+            "message_id": f"mmsg_{uuid.uuid4().hex[:14]}",
+            "session_id": s1, "user_id": user_id,
+            "role": role, "content": content, "citations": cits,
+            "tokens_used": None, "created_at": now - timedelta(days=2, minutes=-len(cits or []) if cits else 0),
+        })
+
+    # Session 2
+    s2 = f"mses_{uuid.uuid4().hex[:14]}"
+    await db.mentor_sessions.insert_one({
+        "session_id": s2, "user_id": user_id,
+        "title": "GST on export of services",
+        "mode": "exam",
+        "created_at": now - timedelta(hours=6), "updated_at": now - timedelta(hours=5),
+        "message_count": 2, "deleted": False,
+    })
+    m2 = [
+        ("user", "Is export of services zero-rated under GST? What's the LUT vs IGST route?", None),
+        ("assistant",
+         "Yes — under Section 16 of the IGST Act, exports of services are **zero-rated supplies**. You have two routes:\n\n"
+         "| Route | How | Refund |\n|---|---|---|\n| **LUT (Letter of Undertaking)** | Export without paying IGST | Claim refund of accumulated ITC |\n| **IGST payment** | Pay IGST, then claim refund of IGST | Automatic under Rule 96 |\n\n"
+         "Conditions for 'export of services' (all five): supplier in India, recipient outside India, place of supply outside India, payment in convertible foreign exchange, supplier and recipient not merely establishments of the same person.\n\n"
+         "SOURCES:\n"
+         "- Act/Standard: IGST Act, 2017\n"
+         "- Section/Para: Section 2(6) (Export definition), Section 16 (Zero-rated)\n"
+         "- Act/Standard: CGST Rules, 2017\n"
+         "- Section/Para: Rule 89 (Refund of ITC), Rule 96 (Refund of IGST)\n",
+         [
+             {"act": "IGST Act, 2017", "section": "Section 2(6)", "note": "Export of services definition"},
+             {"act": "IGST Act, 2017", "section": "Section 16", "note": "Zero-rated supplies"},
+             {"act": "CGST Rules, 2017", "section": "Rule 89 / Rule 96", "note": "Refund mechanics"},
+         ]),
+    ]
+    for role, content, cits in m2:
+        await db.mentor_messages.insert_one({
+            "message_id": f"mmsg_{uuid.uuid4().hex[:14]}",
+            "session_id": s2, "user_id": user_id,
+            "role": role, "content": content, "citations": cits,
+            "tokens_used": None, "created_at": now - timedelta(hours=6),
+        })
+
+    # Study plan (~12-week light plan; pre-authored)
+    exam_date = (now_ist().date() + timedelta(days=90)).strftime("%Y-%m-%d")
+    subjects_rotate = ["Advanced Accounts", "Costing", "Business Law", "Taxation", "Auditing", "Financial Management"]
+    weeks = []
+    cur_date = now_ist().date() + timedelta(days=1)
+    for w in range(1, 13):
+        # Align to Monday if desired; keep simple continuous days
+        days = []
+        for d in range(7):
+            date_str = cur_date.strftime("%Y-%m-%d")
+            subj = subjects_rotate[(w + d) % len(subjects_rotate)]
+            # bias hours to weak areas in first 10 weeks; mock tests in last 2
+            if w >= 11:
+                tasks = [f"{subj} — full mock #{d + 1}", "Review answers + weak-topic drill"]
+                hours = 4
+            else:
+                bias = 4.5 if subj in ("Advanced Accounts", "Costing") else 3.5
+                tasks = [f"{subj} — Chapter block {d + 1}", "40 practice problems", "1 quick recap"]
+                hours = bias
+            days.append({"date": date_str, "subject": subj, "hours": hours, "tasks": tasks})
+            cur_date += timedelta(days=1)
+        weeks.append({"week": w, "days": days})
+    plan_json = {
+        "summary": "12-week plan biased toward Advanced Accounts and Costing (flagged weak areas), rotating full syllabus with final 2 weeks reserved for mocks + weak-topic drills.",
+        "weeks": weeks,
+    }
+    await db.study_plans.insert_one({
+        "plan_id": f"plan_{uuid.uuid4().hex[:14]}", "user_id": user_id,
+        "exam_date": exam_date, "daily_hours": 4,
+        "weak_areas": ["Advanced Accounts", "Costing"],
+        "plan_json": plan_json,
+        "created_at": now_utc(), "status": "active",
+    })
+
 async def run_seed():
     # achievements
     for b in BADGES_SEED:
@@ -1160,6 +1610,7 @@ async def run_seed():
         )
     demo = await db.users.find_one({"email": demo_email}, {"_id": 0})
     await seed_demo_focus_data(demo["user_id"])
+    await seed_demo_mentor_and_plan(demo["user_id"])
 
     # Syllabus
     if await db.syllabus.count_documents({}) == 0:
@@ -1197,6 +1648,12 @@ async def startup():
         await db.user_stats.create_index("user_id", unique=True)
         await db.user_achievements.create_index([("user_id", 1), ("badge_id", 1)], unique=True)
         await db.achievements.create_index("badge_id", unique=True)
+        await db.mentor_sessions.create_index([("user_id", 1), ("updated_at", -1)])
+        await db.mentor_sessions.create_index("session_id", unique=True)
+        await db.mentor_messages.create_index([("session_id", 1), ("created_at", 1)])
+        await db.mentor_messages.create_index("message_id", unique=True)
+        await db.study_plans.create_index([("user_id", 1), ("status", 1)])
+        await db.study_plans.create_index("plan_id", unique=True)
     except Exception as e:
         logger.warning(f"Index setup: {e}")
     await run_seed()

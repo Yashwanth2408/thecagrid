@@ -6,11 +6,12 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { LayoutGrid, Timer, BarChart3, UserCircle2, LogOut, Settings, User as UserIcon } from "lucide-react";
+import { LayoutGrid, Timer, BarChart3, UserCircle2, LogOut, Settings, User as UserIcon, Sparkles } from "lucide-react";
 
 const NAV = [
   { key: "dashboard", label: "Dashboard", to: "/dashboard", icon: LayoutGrid },
   { key: "focus", label: "Focus", to: "/focus", icon: Timer },
+  { key: "mentor", label: "Mentor", to: "/mentor", icon: Sparkles },
   { key: "analytics", label: "Analytics", to: "/analytics", icon: BarChart3 },
   { key: "profile", label: "Profile", to: "/profile", icon: UserCircle2 },
 ];
@@ -18,6 +19,7 @@ const NAV = [
 function keyForPath(pathname) {
   if (pathname.startsWith("/dashboard")) return "dashboard";
   if (pathname.startsWith("/focus")) return "focus";
+  if (pathname.startsWith("/mentor")) return "mentor";
   if (pathname.startsWith("/analytics")) return "analytics";
   if (pathname.startsWith("/profile")) return "profile";
   return "";

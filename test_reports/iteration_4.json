@@ -1,0 +1,65 @@
+{
+  "summary": "Phase 3 end-to-end validation for The CA Grid — AI CA Mentor (Claude Sonnet 4.5 via Emergent LLM key + SSE streaming), persistent chat drawer, /mentor page + sidebar, /mentor/study-plan generator, Dashboard quick-ask card, and Focus completion micro-toast. Backend: 49/49 pytest (30 Phase 1+2 regression + 19 new Phase 3) — including live Claude SSE stream verification, /mentor/quick rate-limit (429 after 10), study plan generate→archive flow, seed idempotency across mentor+plan+focus. Frontend: All UI flows pass — login as demo, sidebar-mentor navigates to /mentor showing 2+ seeded sessions, seeded Ind AS 115 session renders full markdown (h3 + tables + SOURCES card), + NEW creates a new session, mentor-input + mentor-send streams live tokens into the assistant bubble, mentor-mode-practice becomes disabled after first message (mode-locked), /mentor/study-plan renders 12-week grid with sp-regenerate + sp-archive visible, sp-regenerate reveals sp-exam-date form, drawer toggle present on /dashboard, /focus, /analytics, /profile (NOT on /mentor), drawer state persists in localStorage 'cagrid.drawer', dashboard-mentor-input+send navigate to /mentor?session=<id>&auto=<msg>, Focus 1-min complete triggers data-testid='micro-toast' with 'You're on the grid.' + mono 'NOW FOCUSED · 461 ASPIRANTS'. Landing regression: hero-live-ticker + grid-state-updated render with real recent sessions.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/mentor/quick",
+        "issue": "In-memory rate limiter (_QUICK_RATE = defaultdict(deque)) is per-worker process only. If backend is horizontally scaled the 10/min cap becomes 10*N/min. Also, budget carries across tests within the 60s window — my test suite required an ordering hack (test_a_/test_z_) so streaming test doesn't get 429 from the rate-limit test consuming quota."
+      },
+      {
+        "endpoint": "/api/mentor/chat streaming",
+        "issue": "No explicit close/cancel handling — if the client disconnects mid-stream the LLM continues to completion and the assistant message is still persisted. Minor cost concern with real Claude credits."
+      },
+      {
+        "endpoint": "/api/study-plan/generate",
+        "issue": "LLM must return strict JSON via `_json.loads(text)` after fence-strip; if the model wraps output in a preamble the endpoint returns 502. Robust enough for prompt as-written but a `try to extract JSON block from anywhere in text` fallback would be safer."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "/analytics",
+        "issues": ["Recharts still emits 'width(-1) and height(-1) of chart should be greater than 0' warnings — pre-existing from Phase 2, harmless but noisy."]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase3.py",
+    "/app/backend/tests/test_phase2.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/phase3_results.xml",
+    "/app/test_reports/pytest/all_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: rate-limit reset between tests — persist the 60s window per (user_id, endpoint) in Mongo or add a test-only /api/_reset_rate endpoint so parallel test runners don't race.",
+    "OPTIONAL: study-plan/generate — wrap JSON parse with a regex extractor (first `{...}` block) before raising 502, for defensive robustness.",
+    "OPTIONAL: /mentor/chat — abort the LlmChat.stream_message coroutine on client disconnect (StreamingResponse can supply that signal) to save credits when users close the drawer mid-answer.",
+    "OPTIONAL: consider splitting /app/backend/server.py (now 1663 lines) into modules — auth.py, focus.py, mentor.py, study_plan.py, seed.py, pulse.py."
+  ],
+  "critical_code_review_comments": [
+    "server.py grew from 1200 → 1663 lines in Phase 3. Highly recommended to split into modules (auth/focus/mentor/study_plan/seed/pulse/stats) for maintainability.",
+    "focus_complete still contains the dead-code from Phase 2 (lines 586-602: two queries, first overwritten by second) — flagged in iteration_3, unresolved.",
+    "@app.on_event('startup'/'shutdown') is deprecated in FastAPI ≥ 0.109 — migrate to lifespan context manager.",
+    "get_current_user should be wired via Depends(require_user) instead of manually called at the top of every protected endpoint (16+ places).",
+    "The mentor rate-limit dict `_QUICK_RATE` is module-level mutable state — behaves oddly under multi-worker. Move to Redis or a small TTL cache.",
+    "prompts.py is well-structured and locked; no complaints.",
+    "citation regex (SOURCES_RE + CITATION_LINE_RE) is intentionally lenient — the tradeoff is documented and acceptable; live-LLM assistant messages may show either well-parsed citations or bullet-fallbacks depending on model formatting.",
+    "MentorChat.jsx (334 lines) is reasonably sized. Mode-lock logic disables *only the inactive* mode button, keeping the active one clickable but no-op — a subtle UX pattern, works correctly, worth a code comment.",
+    "streamSSE.js — fetch-based reader looks correct; assumes JSON per data: line (matches _sse_wrap on backend). Good."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase3.py (new — 19 tests for Phase 3 mentor + study plan + regression)"
+  ],
+  "success_rate": {"backend": "100% (49/49)", "frontend": "100% (all Phase 3 review scenarios pass)"},
+  "test_credentials": "demo@cagrid.in / demo123 (auto-seeded on backend startup + POST /api/seed)",
+  "seed_data_creation": "None — demo user + syllabus + 40 focus sessions + 2 mentor sessions + 1 active study plan are all seeded automatically. Live Claude LLM streams consumed a few tokens per test run (~5 short prompts × ~150 tokens each).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase 3 backend + frontend are 100% green. Key landmines: (1) /mentor/quick rate limit is in-memory per-process — if you re-run TestMentorQuick within 60s, the streaming test will 429 unless you keep the test_a_/test_z_ ordering AND accept a 62s wait retry. (2) Live Claude streaming consumes credits — do NOT spam /mentor/chat or /mentor/quick in tests; my Phase 3 suite makes 2 real streaming calls and 15 rapid quick calls (most 429-ing after the 10th). (3) Frontend mentor-mode toggle disables only the INACTIVE mode after first message; the active-mode button stays clickable but no-ops via `!modeLocked && onModeChange(m)` — this is intentional, not a bug. (4) Study plan seed produces 12 weeks × 7 days with subjects rotating; regenerate archives it and archive returns null active. (5) Focus micro-toast appears within ~3s of clicking [data-testid='focus-complete'] on the Focus page, uses [data-testid='micro-toast'] with 'You're on the grid.' text + mono subtitle 'NOW FOCUSED · N ASPIRANTS' (N from /api/live/pulse.active_now which is primed). (6) Drawer key in localStorage is 'cagrid.drawer' — persists {open, sessionId, mode}. (7) Voice buttons (mentor-mic-toggle, mentor-speak-toggle) are HUMAN_REQUIRED (mic permission) — skipped/manual. (8) pytest.ini pins -n 2 --dist loadscope; do NOT change.",
+  "rca of the issue": "N/A — no bugs found. Only test-authoring nuance: within the Phase 3 quick-rate test class, the streaming test and rate-limit test share the same 60s sliding window (in-memory _QUICK_RATE), so ordering matters. Fixed by renaming methods test_a_/test_z_ to guarantee alphabetical execution order + a single 62s retry-on-429 in the streaming test."
+}

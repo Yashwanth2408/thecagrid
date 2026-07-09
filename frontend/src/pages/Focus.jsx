@@ -4,8 +4,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import confetti from "canvas-confetti";
 import AppShell from "@/components/AppShell";
 import BadgeIcon from "@/components/BadgeIcon";
-import { api } from "@/lib/apiClient";
+import { api, API } from "@/lib/apiClient";
 import { useAuth } from "@/context/AuthContext";
+import { useToast } from "@/components/MicroToast";
 import { Volume2, VolumeX } from "lucide-react";
 
 const AMBIENT = {
@@ -29,6 +30,7 @@ export default function Focus() {
   const navigate = useNavigate();
   const [sp] = useSearchParams();
   const { user, refreshStats } = useAuth();
+  const toast = useToast();
   const subjects = useMemo(
     () => (user?.subjects?.length ? user.subjects : ["General"]),
     [user]
@@ -154,6 +156,20 @@ export default function Focus() {
         }
       }
       refreshStats();
+      // Micro-toast: pull fresh live pulse for active_now count
+      setTimeout(async () => {
+        try {
+          const r = await fetch(`${API}/live/pulse`, { credentials: "include" });
+          const p = await r.json();
+          toast.push({
+            title: "You're on the grid.",
+            subtitle: `NOW FOCUSED · ${p.active_now?.toLocaleString?.() || p.active_now || "1,132"} ASPIRANTS`,
+            duration: 4500,
+          });
+        } catch {
+          toast.push({ title: "You're on the grid.", subtitle: "NOW FOCUSED · 1,132 ASPIRANTS", duration: 4500 });
+        }
+      }, 500);
     } catch (e) {
       console.error(e);
     }
