@@ -182,3 +182,30 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 - Frontend: **100% Phase 3.5 test-ids present + flows working**
 - Regression: Focus + Mentor + Streaks unaffected.
 
+
+---
+
+## Phase 4 — Content Layer (2026-07-09)
+
+### Backend
+- **Syllabus** — force-reseeds if empty. 16 papers (F1-F4, I1-I6, P1-P6) with 200+ canonical ICAI chapters, each with `weightage_pct` + `estimated_hours`. Endpoints: `GET /api/syllabus`, `GET /api/syllabus/{paper_code}`, `GET /api/syllabus/progress`, `POST /api/syllabus/progress`. Upsert semantics keyed by (user_id, chapter_id).
+- **Regulatory Radar** — 28 seeded alerts (5 critical, 12 moderate, 11 info) spanning last 90 days. `GET /api/radar/alerts` (level+impact+days filter, personalised for auth users), `GET /api/radar/alerts/{id}`, `POST /api/radar/alerts/{id}/dismiss`, `GET /api/radar/summary` (60s in-memory cache).
+- **Content Hub** — 20 substantive editorial posts (700-1500 words each) with hero_gradient, author, tags, level_filter, read_minutes. `GET /api/content/posts`, `GET /api/content/posts/{slug}` (+ related), `GET /api/content/digest` (5min cache).
+- **Weekly Recap** — `GET /api/recap/weekly` computes 7-day focus_minutes (with prev-week delta %), top_subject, chapters_completed, mentor_asks, badges_earned, regulatory_critical_unread, next_week_focus suggestions.
+- Account export/delete cascades new collections (user_syllabus_progress, user_dismissed_alerts).
+- 5 new mongo indexes; run_seed seeds demo I1=4-mastered + I2=6-in-progress.
+
+### Frontend
+- **/syllabus** — editorial per-paper accordion with radial progress rings, chapter status control (NOT/PROGRESS/REVISED/MASTERED), notes editor, filter chips, green pulse animation on state change.
+- **/radar** — timeline layout with mono dates, impact badges (CRITICAL glow), source, title, body, chapter-chip links to /syllabus, dismiss with slide-out animation.
+- **/hub** — editorial magazine layout (hero + secondary + grid). Tag filter chips.
+- **/hub/:slug** — post detail with hero-gradient banner, ReactMarkdown + remark-gfm rendering (italic serif h2s, violet blockquote, mono code), sticky TOC on desktop, related posts.
+- **Dashboard** — 4 new bento cards: SyllabusCard (top 3 papers + progress rings), RadarCard (unread count + latest 3 with critical glow), HubCard (today's pick), RecapCard (weekly focus + delta + top subject).
+- **Sidebar** — 3 new links: Syllabus (BookOpen), Radar (Radio), Hub (Newspaper).
+
+### Test status (iteration_10)
+- Backend: **22/22 pytest PASS**
+- Frontend: **95%** — only unmet testid `syllabus-empty-onboarding` is unreachable because ProtectedRoute redirects null-level users to /onboarding first (correct UX; spec conflict flagged, no code change needed).
+- Regression: All Phase 1-3.5 flows intact; account export includes syllabus_progress + dismissed_alerts.
+- HubPost fix applied by tester: `<title>{`${post.title} · …`}</title>` template literal to avoid Helmet children-array crash.
+
