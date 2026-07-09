@@ -76,3 +76,13 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 - User ID: custom `user_{uuid.hex[:12]}`; queries always use `{"_id": 0}` projection
 - `datetime.now(timezone.utc)` throughout; naive datetime coerced to UTC before comparison
 - CORS: `allow_origin_regex='.*'` + credentials (restrict for prod later)
+
+## Frontend Visual Overhaul — Awwwards-tier (2026-07-09)
+- Fonts swapped to Instrument Serif (display italic) + Space Grotesk (body/UI) + JetBrains Mono (labels/tickers/numbers); Inter removed
+- Full landing rebuild: editorial off-canvas hero, live "NOW ON THE GRID" ticker, generative-dot "Right now on the grid" with count-up stats, sticky-pinned "How it works" (FOCUS / STREAK / MENTOR / SHIP) with clip-path swaps, asymmetric bento with mixed radii, "5.2 years" cost section, repeating-wordmark editorial footer
+- Auth pages: split-screen with rotating quote panel (4 quotes) + underline-only inputs + text-link CTAs
+- Onboarding: vertical-list level selector, one-question quiz with A/B/C/D shortcuts, animated fit-score counter
+- Dashboard shell: violet-bar sidebar, glass topnav with mono breadcrumb, acid-green streak
+- Custom cursor: dot + trailing ring with spring lag, magnetic pull on `[data-magnetic]`, mono labels via `[data-cursor-label]`, auto-disables on touch / reduced-motion
+- Cursor-reactive dot grid, film-grain SVG noise overlay, Framer AnimatePresence route transitions
+- All Phase 1 functionality preserved: 15/15 backend + 13/13 frontend regression tests pass
