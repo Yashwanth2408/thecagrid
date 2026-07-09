@@ -221,6 +221,7 @@ export default function Onboarding() {
   const [answers, setAnswers] = useState({});
   const [goal, setGoal] = useState(180);
   const [subjects, setSubjects] = useState([]);
+  const [city, setCity] = useState("");
   const [busy, setBusy] = useState(false);
 
   const isAspiring = level === "Aspiring";
@@ -279,6 +280,7 @@ export default function Onboarding() {
         subjects,
         fit_score: fit ? fit.total : null,
         onboarded: true,
+        city: city.trim() || null,
       };
       const r = await api.post("/onboarding", body);
       setUser(r.data);
@@ -506,6 +508,25 @@ export default function Onboarding() {
                         </button>
                       );
                     })}
+                  </div>
+
+                  <div className="mt-10">
+                    <label className="block">
+                      <span className="font-mono uppercase tracking-[0.24em] text-[10.5px] text-[#5A5A62]">
+                        WHERE ARE YOU BASED? (OPTIONAL)
+                      </span>
+                      <input
+                        type="text"
+                        value={city}
+                        onChange={(e) => setCity(e.target.value)}
+                        placeholder="Mumbai, Delhi, Pune…"
+                        className="mt-2 w-full bg-transparent border-0 border-b border-white/[0.15] focus:border-[#8B5CF6] focus:outline-none focus:ring-0 px-0 py-2 text-[17px] text-[#F2F2F2] placeholder:text-[#5A5A62]"
+                        data-testid="onb-city"
+                      />
+                    </label>
+                    <div className="mt-2 font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62]">
+                      helps us show your session on the live grid.
+                    </div>
                   </div>
                 </div>
               </div>

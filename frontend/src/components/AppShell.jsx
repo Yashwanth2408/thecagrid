@@ -1,6 +1,5 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { motion } from "framer-motion";
 import Logo from "@/components/Logo";
 import { useAuth } from "@/context/AuthContext";
 import {
@@ -11,16 +10,32 @@ import { LayoutGrid, Timer, BarChart3, UserCircle2, LogOut, Settings, User as Us
 
 const NAV = [
   { key: "dashboard", label: "Dashboard", to: "/dashboard", icon: LayoutGrid },
-  { key: "focus", label: "Focus", to: "/coming-soon?f=focus", icon: Timer },
-  { key: "analytics", label: "Analytics", to: "/coming-soon?f=analytics", icon: BarChart3 },
-  { key: "profile", label: "Profile", to: "/coming-soon?f=profile", icon: UserCircle2 },
+  { key: "focus", label: "Focus", to: "/focus", icon: Timer },
+  { key: "analytics", label: "Analytics", to: "/analytics", icon: BarChart3 },
+  { key: "profile", label: "Profile", to: "/profile", icon: UserCircle2 },
 ];
 
-export default function AppShell({ children, breadcrumb = "DASHBOARD / OVERVIEW" }) {
-  const { user, logout } = useAuth();
+function keyForPath(pathname) {
+  if (pathname.startsWith("/dashboard")) return "dashboard";
+  if (pathname.startsWith("/focus")) return "focus";
+  if (pathname.startsWith("/analytics")) return "analytics";
+  if (pathname.startsWith("/profile")) return "profile";
+  return "";
+}
+
+export default function AppShell({ children, breadcrumb }) {
+  const { user, stats, refreshStats, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const activeKey = location.pathname === "/dashboard" ? "dashboard" : new URLSearchParams(location.search).get("f") || "";
+  const activeKey = keyForPath(location.pathname);
+  const streak = stats?.current_streak ?? 0;
+  const level = stats?.level ?? 1;
+
+  // Refresh stats when shell mounts / user changes (covers post-login race)
+  useEffect(() => {
+    if (user && !stats) refreshStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   const initials = (user?.name || user?.email || "U")
     .split(/\s+|@/).filter(Boolean).slice(0, 2).map((s) => s[0].toUpperCase()).join("");
@@ -30,20 +45,27 @@ export default function AppShell({ children, breadcrumb = "DASHBOARD / OVERVIEW"
     navigate("/", { replace: true });
   };
 
+  const crumb = breadcrumb || `DASHBOARD / ${activeKey?.toUpperCase() || "OVERVIEW"}`;
+
   return (
     <div className="min-h-screen bg-[#0A0A0C] text-[#F2F2F2] flex flex-col">
-      {/* Top nav */}
       <header className="sticky top-0 z-40 backdrop-blur-md bg-[#0A0A0C]/70 border-b border-[#8B5CF6]/40" data-testid="app-topnav">
         <div className="max-w-[1440px] mx-auto px-6 lg:px-10 h-16 grid grid-cols-3 items-center">
           <Link to="/dashboard" className="flex items-center gap-3 justify-self-start"><Logo /></Link>
           <div className="justify-self-center font-mono uppercase tracking-[0.24em] text-[11px] text-[#8B8B92]" data-testid="app-breadcrumb">
-            {breadcrumb}
+            {crumb}
           </div>
-          <div className="justify-self-end flex items-center gap-6">
-            <div className="flex items-center gap-2 font-mono tabular-nums text-[13px]" data-testid="streak-flame">
-              <span className="text-[#B4FF39] text-[15px] leading-none">🔥</span>
-              <span className="text-[#B4FF39] font-medium">0</span>
-              <span className="text-[10px] uppercase tracking-[0.22em] text-[#5A5A62] ml-1">d</span>
+          <div className="justify-self-end flex items-center gap-5">
+            <div className="flex items-center gap-2 font-mono tabular-nums text-[13px]" data-testid="nav-streak-flame">
+              <FlameIdle />
+              <span className="text-[#B4FF39] font-medium">{streak}</span>
+              <span className="text-[10px] uppercase tracking-[0.22em] text-[#5A5A62] ml-0.5">d</span>
+            </div>
+            <div
+              className="flex items-center gap-1.5 font-mono uppercase tracking-[0.22em] text-[11px] text-[#8B5CF6] border border-[#8B5CF6]/40 px-2.5 py-1"
+              data-testid="nav-level"
+            >
+              <span className="text-[9.5px] text-[#5A5A62]">L</span>{level}
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -60,7 +82,7 @@ export default function AppShell({ children, breadcrumb = "DASHBOARD / OVERVIEW"
                   <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-[#5A5A62] truncate mt-1">{user?.email}</div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator className="bg-white/[0.06]" />
-                <DropdownMenuItem onClick={() => navigate("/coming-soon?f=profile")} className="focus:bg-white/[0.04] cursor-pointer uppercase tracking-[0.22em] text-[11px]" data-testid="menu-profile">
+                <DropdownMenuItem onClick={() => navigate("/profile")} className="focus:bg-white/[0.04] cursor-pointer uppercase tracking-[0.22em] text-[11px]" data-testid="menu-profile">
                   <UserIcon className="w-3.5 h-3.5 mr-2" strokeWidth={1.5} /> Profile
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => navigate("/coming-soon?f=settings")} className="focus:bg-white/[0.04] cursor-pointer uppercase tracking-[0.22em] text-[11px]" data-testid="menu-settings">
@@ -77,11 +99,10 @@ export default function AppShell({ children, breadcrumb = "DASHBOARD / OVERVIEW"
       </header>
 
       <div className="flex-1 flex">
-        {/* Sidebar */}
         <aside className="hidden md:flex flex-col w-16 py-8 gap-2 border-r border-white/[0.06] bg-[#0A0A0C]/60 backdrop-blur" data-testid="app-sidebar">
           {NAV.map((n) => {
             const Icon = n.icon;
-            const active = n.key === activeKey || (n.key === "dashboard" && location.pathname === "/dashboard");
+            const active = n.key === activeKey;
             return (
               <Link
                 key={n.key}
@@ -99,5 +120,17 @@ export default function AppShell({ children, breadcrumb = "DASHBOARD / OVERVIEW"
         <main className="flex-1 min-w-0">{children}</main>
       </div>
     </div>
+  );
+}
+
+function FlameIdle() {
+  return (
+    <span
+      className="text-[15px] leading-none"
+      style={{ animation: "flameflicker 1.6s ease-in-out infinite" }}
+    >
+      🔥
+      <style>{`@keyframes flameflicker { 0%,100% { opacity: 1; } 50% { opacity: 0.82; } }`}</style>
+    </span>
   );
 }

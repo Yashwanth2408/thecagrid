@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { motion, useInView, useMotionValue, useSpring, useTransform, useScroll } from "framer-motion";
+import { motion, useInView, useMotionValue, useSpring, useTransform, useScroll, AnimatePresence } from "framer-motion";
 import { Link } from "react-router-dom";
 import GridBackground from "@/components/GridBackground";
 import Logo from "@/components/Logo";
+import { api } from "@/lib/apiClient";
 
 /* ---------- helpers ---------- */
 function Eyebrow({ children, className = "" }) {
@@ -37,33 +38,37 @@ function CountUp({ to, duration = 1600, decimals = 0, suffix = "" }) {
 /* ---------- HERO ---------- */
 
 const TICKER_SEED = [
-  { lvl: "INT", subj: "Adv Accts", min: 42, city: "Mumbai" },
-  { lvl: "FDN", subj: "Business Law", min: 17, city: "Pune" },
-  { lvl: "FIN", subj: "DT & Int'l Tax", min: 128, city: "Delhi" },
-  { lvl: "INT", subj: "Cost & Mgmt", min: 64, city: "Bengaluru" },
-  { lvl: "FDN", subj: "Statistics", min: 22, city: "Hyderabad" },
-  { lvl: "ART", subj: "Auditing", min: 51, city: "Kolkata" },
-  { lvl: "FIN", subj: "Fin Reporting", min: 89, city: "Chennai" },
-  { lvl: "INT", subj: "Taxation", min: 33, city: "Ahmedabad" },
-  { lvl: "FDN", subj: "Economics", min: 46, city: "Indore" },
-  { lvl: "FIN", subj: "IDT Laws", min: 74, city: "Jaipur" },
-  { lvl: "INT", subj: "FM & SM", min: 29, city: "Lucknow" },
-  { lvl: "ART", subj: "GST Advisory", min: 58, city: "Kochi" },
+  { level: "INT", subject: "Adv Accounts", minutes: 42, city: "Mumbai" },
+  { level: "FDN", subject: "Business Law", minutes: 17, city: "Pune" },
+  { level: "FIN", subject: "DT & Int'l Tax", minutes: 128, city: "Delhi" },
+  { level: "INT", subject: "Cost & Mgmt", minutes: 64, city: "Bengaluru" },
+  { level: "FDN", subject: "Statistics", minutes: 22, city: "Hyderabad" },
+  { level: "ART", subject: "Auditing", minutes: 51, city: "Kolkata" },
+  { level: "FIN", subject: "Fin Reporting", minutes: 89, city: "Chennai" },
+  { level: "INT", subject: "Taxation", minutes: 33, city: "Ahmedabad" },
 ];
 
-function LiveTicker() {
-  const [rows, setRows] = useState(TICKER_SEED.slice(0, 8));
+/** Global pulse hook — fetches /api/live/pulse every 12s, caches, shared via prop drilling for simplicity */
+function usePulse() {
+  const [pulse, setPulse] = useState(null);
+  const [updatedAt, setUpdatedAt] = useState(null);
   useEffect(() => {
-    const t = setInterval(() => {
-      setRows((cur) => {
-        const nextIdx = Math.floor(Math.random() * TICKER_SEED.length);
-        const inserted = TICKER_SEED[nextIdx];
-        const jitter = { ...inserted, min: inserted.min + Math.floor(Math.random() * 20 - 10) };
-        return [jitter, ...cur].slice(0, 8);
-      });
-    }, 2200);
-    return () => clearInterval(t);
+    let alive = true;
+    const fetchOnce = () => api.get("/live/pulse").then((r) => {
+      if (!alive) return;
+      setPulse(r.data);
+      setUpdatedAt(Date.now());
+    }).catch(() => {});
+    fetchOnce();
+    const t = setInterval(fetchOnce, 12000);
+    return () => { alive = false; clearInterval(t); };
   }, []);
+  return { pulse, updatedAt };
+}
+
+function LiveTicker({ pulse }) {
+  const rows = (pulse?.recent_sessions || TICKER_SEED).slice(0, 8);
+  const activeNow = pulse?.active_now ?? 1132;
   return (
     <div className="relative border-l border-[#8B5CF6]/60 bg-[#0F0F12]/80 backdrop-blur-sm" data-testid="hero-live-ticker">
       <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.06]">
@@ -73,35 +78,40 @@ function LiveTicker() {
             <span className="relative inline-flex w-2 h-2 rounded-full bg-[#B4FF39]" />
           </span>
           <span className="font-mono text-[10.5px] uppercase tracking-[0.24em] text-[#F2F2F2]">Now on the grid</span>
+          <span className="font-mono text-[9.5px] uppercase tracking-[0.24em] text-[#B4FF39] ml-1">LIVE</span>
         </div>
-        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#5A5A62]">1132 online</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#5A5A62] tabular-nums">{activeNow} online</span>
       </div>
       <div className="px-5 py-3 max-h-[300px] overflow-hidden">
         <div className="grid grid-cols-[38px_1fr_58px_1fr] gap-3 pb-2 font-mono text-[9.5px] uppercase tracking-[0.22em] text-[#5A5A62]">
           <span>LVL</span><span>SUBJECT</span><span className="text-right">MIN</span><span>CITY</span>
         </div>
-        <div className="space-y-2">
-          {rows.map((r, i) => (
-            <motion.div
-              key={`${r.subj}-${i}`}
-              initial={{ opacity: 0, y: -6 }}
-              animate={{ opacity: i === 0 ? 1 : Math.max(0.3, 1 - i * 0.11), y: 0 }}
-              transition={{ duration: 0.4 }}
-              className="grid grid-cols-[38px_1fr_58px_1fr] gap-3 font-mono text-[11px] text-[#F2F2F2]"
-            >
-              <span className={`${r.lvl === "FIN" ? "text-[#8B5CF6]" : r.lvl === "INT" ? "text-[#F2F2F2]" : "text-[#8B8B92]"}`}>{r.lvl}</span>
-              <span className="truncate">{r.subj}</span>
-              <span className="text-right tabular-nums text-[#F2F2F2]">{r.min}m</span>
-              <span className="truncate text-[#8B8B92]">{r.city}</span>
-            </motion.div>
-          ))}
-        </div>
+        <AnimatePresence initial={false}>
+          <div className="space-y-2">
+            {rows.map((r, i) => (
+              <motion.div
+                key={`${r.level}-${r.subject}-${r.city}-${i}`}
+                initial={{ opacity: 0, y: -6 }}
+                animate={{ opacity: i === 0 ? 1 : Math.max(0.3, 1 - i * 0.11), y: 0 }}
+                exit={{ opacity: 0, y: 6 }}
+                transition={{ duration: 0.35 }}
+                layout
+                className="grid grid-cols-[38px_1fr_58px_1fr] gap-3 font-mono text-[11px] text-[#F2F2F2]"
+              >
+                <span className={`${r.level === "FIN" ? "text-[#8B5CF6]" : r.level === "INT" ? "text-[#F2F2F2]" : "text-[#8B8B92]"}`}>{r.level}</span>
+                <span className="truncate">{r.subject}</span>
+                <span className="text-right tabular-nums text-[#F2F2F2]">{r.minutes}m</span>
+                <span className="truncate text-[#8B8B92]">{r.city}</span>
+              </motion.div>
+            ))}
+          </div>
+        </AnimatePresence>
       </div>
     </div>
   );
 }
 
-function Hero() {
+function Hero({ pulse }) {
   return (
     <section className="relative min-h-screen flex items-center overflow-hidden">
       {/* subtle radial punctuation */}
@@ -177,9 +187,9 @@ function Hero() {
           transition={{ delay: 0.5, duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
           className="col-span-12 lg:col-span-4 lg:col-start-9 self-end lg:mb-6"
         >
-          <LiveTicker />
+          <LiveTicker pulse={pulse} />
           <div className="mt-3 font-mono text-[9.5px] uppercase tracking-[0.22em] text-[#5A5A62]">
-            [ 41.28°N / 74.00°W · SIM · BETA ]
+            [ IST · REAL-TIME · UPDATED EVERY 12s ]
           </div>
         </motion.div>
       </div>
@@ -189,14 +199,15 @@ function Hero() {
 
 /* ---------- THE GRID STATE ---------- */
 
-function GridVisualization() {
+function GridVisualization({ intensity = 0.35 }) {
   const cols = 40;
   const rows = 20;
   const [pulses, setPulses] = useState(() => new Set());
   useEffect(() => {
     const tick = () => {
       const next = new Set();
-      const count = 60 + Math.floor(Math.random() * 40);
+      const density = Math.max(0.1, Math.min(1.0, intensity));
+      const count = Math.floor(30 + density * 140); // 30..170 dots
       for (let i = 0; i < count; i++) {
         next.add(Math.floor(Math.random() * cols * rows));
       }
@@ -205,7 +216,7 @@ function GridVisualization() {
     tick();
     const t = setInterval(tick, 2000);
     return () => clearInterval(t);
-  }, []);
+  }, [intensity]);
   const dots = [];
   for (let i = 0; i < cols * rows; i++) {
     const isActive = pulses.has(i);
@@ -229,7 +240,19 @@ function GridVisualization() {
   );
 }
 
-function GridState() {
+function GridState({ pulse, updatedAt }) {
+  const [secondsSince, setSecondsSince] = useState(0);
+  useEffect(() => {
+    if (!updatedAt) return;
+    const t = setInterval(() => setSecondsSince(Math.floor((Date.now() - updatedAt) / 1000)), 1000);
+    return () => clearInterval(t);
+  }, [updatedAt]);
+  const stats = [
+    { n: pulse?.minutes_last_hour ?? 4281, label: "minutes logged · last hour", accent: false },
+    { n: pulse?.active_now ?? 1132, label: "aspirants focused · right now", accent: true },
+    { n: pulse?.streaks_at_risk ?? 187, label: "streaks at risk · next 60 min", accent: false },
+  ];
+  const intensity = Math.min(1, (pulse?.active_now || 200) / 1000);
   return (
     <section id="grid-state" className="relative py-32 border-t border-white/[0.06]">
       <div className="max-w-[1440px] mx-auto px-8 lg:px-16">
@@ -242,23 +265,19 @@ function GridState() {
             <p className="mt-6 max-w-md text-[15px] text-[#8B8B92]">
               A live view of what happens when the ninety of you who read this decide to sit down.
             </p>
-            <div className="mt-8 font-mono text-[9.5px] uppercase tracking-[0.22em] text-[#5A5A62]">
-              [ simulated during beta ]
+            <div className="mt-8 font-mono text-[9.5px] uppercase tracking-[0.22em] text-[#5A5A62]" data-testid="grid-state-updated">
+              [ LIVE · UPDATED {secondsSince}s AGO ]
             </div>
           </div>
           <div className="col-span-12 lg:col-span-6 lg:pl-12" data-cursor-label="LIVE">
             <div className="mb-10">
-              <GridVisualization />
+              <GridVisualization intensity={intensity} />
             </div>
             <div className="grid gap-6">
-              {[
-                { n: 4281, label: "minutes logged · last hour", accent: false },
-                { n: 1132, label: "aspirants focused · right now", accent: true },
-                { n: 187, label: "streaks at risk · next 60 min", accent: false },
-              ].map((s) => (
+              {stats.map((s) => (
                 <div key={s.label} className="border-t border-white/[0.08] pt-4 flex items-baseline justify-between gap-6">
                   <div className={`font-mono tabular-nums text-[44px] lg:text-[60px] font-medium leading-none ${s.accent ? "text-[#8B5CF6]" : "text-[#F2F2F2]"}`}>
-                    <CountUp to={s.n} />
+                    <LiveCount to={s.n} />
                   </div>
                   <div className="font-mono uppercase tracking-[0.2em] text-[10.5px] text-[#8B8B92] text-right max-w-[220px]">
                     {s.label}
@@ -271,6 +290,30 @@ function GridState() {
       </div>
     </section>
   );
+}
+
+/** Live count that eases from previous displayed value to `to` on each change. */
+function LiveCount({ to }) {
+  const ref = useRef(null);
+  const inView = useInView(ref, { once: true, margin: "-80px" });
+  const [display, setDisplay] = useState(0);
+  const prevRef = useRef(0);
+  useEffect(() => {
+    if (!inView) return;
+    const from = prevRef.current;
+    let start;
+    const step = (ts) => {
+      if (!start) start = ts;
+      const p = Math.min((ts - start) / 1200, 1);
+      const eased = 1 - Math.pow(1 - p, 3);
+      const val = from + (to - from) * eased;
+      setDisplay(val);
+      if (p < 1) requestAnimationFrame(step);
+      else prevRef.current = to;
+    };
+    requestAnimationFrame(step);
+  }, [inView, to]);
+  return <span ref={ref}>{Math.floor(display).toLocaleString()}</span>;
 }
 
 /* ---------- HOW IT WORKS (sticky-pin) ---------- */
@@ -627,13 +670,14 @@ function TopNav() {
 /* ---------- PAGE ---------- */
 
 export default function Landing() {
+  const { pulse, updatedAt } = usePulse();
   return (
     <div className="relative min-h-screen bg-[#0A0A0C] text-[#F2F2F2]">
       <GridBackground />
       <TopNav />
       <div className="relative">
-        <Hero />
-        <GridState />
+        <Hero pulse={pulse} />
+        <GridState pulse={pulse} updatedAt={updatedAt} />
         <HowItWorks />
         <BentoLanding />
         <CostSection />

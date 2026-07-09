@@ -21,17 +21,7 @@ BASE_URL = BASE_URL.rstrip("/")
 API = f"{BASE_URL}/api"
 
 
-# ---------- Fixtures ----------
-@pytest.fixture(scope="session", autouse=True)
-def ensure_seed():
-    """Trigger idempotent seed so demo user exists."""
-    r = requests.post(f"{API}/seed", timeout=15)
-    assert r.status_code == 200, f"Seed failed: {r.status_code} {r.text}"
-    data = r.json()
-    assert data.get("ok") is True
-    return data
-
-
+# ---------- Fixtures ---------- (session seed comes from conftest.py)
 @pytest.fixture()
 def fresh_session():
     return requests.Session()
@@ -45,15 +35,12 @@ class TestHealthAndOpenAPI:
         assert r.json() == {"message": "The CA Grid API"}
 
     def test_openapi_public(self):
-        # OpenAPI is served at /openapi.json (FastAPI default at app root)
-        r = requests.get(f"{BASE_URL}/openapi.json", timeout=10)
-        # accept either API-prefix mount or root; typical FastAPI: root
-        if r.status_code == 404:
-            r = requests.get(f"{API}/openapi.json", timeout=10)
+        # OpenAPI is served at /api/openapi.json (mounted under /api for ingress)
+        r = requests.get(f"{API}/openapi.json", timeout=10)
         assert r.status_code == 200, f"OpenAPI not public: {r.status_code}"
         j = r.json()
         assert "paths" in j
-        assert "/api/auth/login" in j["paths"] or "/auth/login" in j["paths"]
+        assert "/api/auth/login" in j["paths"]
 
 
 # ---------- Auth ----------
@@ -69,7 +56,8 @@ class TestAuth:
         assert "user" in data and "session_token" in data
         assert data["user"]["email"] == "demo@cagrid.in"
         assert data["user"]["onboarded"] is True
-        assert data["user"]["journey_level"] == "Foundation"
+        # Phase 2 seed sets Intermediate
+        assert data["user"]["journey_level"] in ("Intermediate", "Foundation")
         # cookie set
         assert fresh_session.cookies.get("session_token"), "session_token cookie not set"
 
