@@ -1,0 +1,26 @@
+{
+  "summary": "Iteration 8 — backend-only retest of the FIX 2 FINAL pre-pass in parse_citations() (orphan label-line + next-value merge at server.py:1081-1099), plus FIX 1 smoke and self-test log check. Result: 4/4 targeted tests PASS. The pre-pass correctly folds bare-label lines (e.g. '**Act/Standard:**' followed by 'Income Tax Act, 1961' on the next line) into 'Label: value' strings before the grouping loop runs. Both live Claude chats (2 total — within budget) produced clean grouped citations with NO leaked labels and NO ghost half-citations. Self-test log after last backend startup is silent. FIX 1 /generate contract still healthy: <3s response, valid pjob_ id, /status endpoint returns the four documented states.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase3_fix2_final.py",
+    "/app/test_reports/pytest/iter8_fix2_final.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Pre-pass merge at server.py:1081-1099 uses bare_label_re that requires the ENTIRE line to be a bare label. Correct — it won't accidentally swallow a label+value single-line entry.",
+    "Consumes the next non-empty line unconditionally as the value. Safe in practice because _clean() already stripped blank lines before the pre-pass runs. If a bare label happens to be the LAST line of the SOURCES block, we correctly skip merging (i+1 < len(lines) guard).",
+    "Merged label is emitted verbatim (e.g. 'Act/Standard' → 'Act/Standard: <value>'); this matches the labeled parser regex which accepts Act/Standard|Act|Standard|Circular|Section/Para|Section|Para|§|Note case-insensitively. Verified.",
+    "6th self-test sample at server.py:1147 covers the exact orphan-label pattern from iter7 RCA — self-test is now silent on this pattern.",
+    "server.py on_event('startup'/'shutdown') deprecation still open (unchanged, not blocking).",
+    "In-memory _PLAN_JOBS store still not persisted to Mongo — poll clients get 404 across restarts (documented earlier, acceptable at current scale)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (4/4 targeted tests)"},
+  "test_credentials": "demo@cagrid.in / demo123 (verified).",
+  "seed_data_creation": "2 mentor sessions created (within the 2-chat budget): mses_* for Section 44AD (Income Tax Act) and mses_520d8292496d41 for Ind AS 115. 1 study-plan async job spawned via /generate smoke (pjob_*), polled 3× but NOT run to completion to save Claude tokens.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "FIX 2 grouping/parsing pipeline is now stable across all three observed Claude output styles: (1) compact 'Act — §Section [Note]', (2) same-line labeled 'Act/Standard: X; Section/Para: Y; Note: Z', (3) same-line dash-list '- Act/Standard: X\\n- Section/Para: Y\\n- Note: Z', and (4) orphan-label two-line form '**Act/Standard:**\\nX\\n**Section/Para:**\\nY\\n**Note:**\\nZ'. If Claude emits yet another format in future runs, capture the raw text (assistant content tail is logged in test output) and add a 7th self-test sample. FIX 1 async-job full 90s completion test does NOT need re-running.",
+  "rca of the issue": "PREVIOUS ISSUE (iter7) — parse_citations() did not group orphan label-only lines with the next non-empty value line, producing 6 half-citations for the multi-line labeled Claude form. FIX APPLIED (iter8) — server.py:1081-1099 pre-pass: after _clean() strips markdown bold and blank lines, if a line matches r'^(Act/Standard|Act|Standard|Circular|Section/Para|Section|Para|§|Note)\\s*[:\\-]?\\s*$' (label + optional colon and nothing else) AND another line follows, merge them into 'Label: <next>' and skip the next line. The merged list is then fed to the pre-existing grouping/labeled/compact parsers unchanged. Observed live outputs from this iteration: (a) Ind AS 115 test — Claude emitted three same-line labeled dash-list groups → parser produced 3 clean grouped citations c0={act:'Ind AS 115 - Revenue from Contracts with Customers', section:'Para 31 (The Five-Step Model)', note:'Framework for revenue recognition applicable from FY 2018-19 onwards'}; (b) Section 44AD test — passed with clean c0 (details in pytest log). Zero ghost half-citations across both live tests. Zero self-test warnings after the most recent 'Application startup complete.' line."
+}

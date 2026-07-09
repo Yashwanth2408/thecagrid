@@ -1077,6 +1077,27 @@ def parse_citations(text: str) -> list:
     new_group_re = re.compile(r"^(Act/Standard|Act|Standard|Circular)\s*[:\-]", re.IGNORECASE)
 
     lines = [ln for ln in (_clean(l) for l in m.group(1).splitlines()) if ln]
+
+    # PRE-PASS: merge orphan label-only lines with the next value line
+    # e.g. "**Act/Standard:**" alone on a line followed by "Income Tax Act, 1961" → "Act/Standard: Income Tax Act, 1961"
+    bare_label_re = re.compile(
+        r"^(Act/Standard|Act|Standard|Circular|Section/Para|Section|Para|§|Note)\s*[:\-]?\s*$",
+        re.IGNORECASE,
+    )
+    merged: List[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        bm = bare_label_re.match(line)
+        if bm and i + 1 < len(lines):
+            label = bm.group(1)
+            merged.append(f"{label}: {lines[i + 1]}")
+            i += 2
+        else:
+            merged.append(line)
+            i += 1
+    lines = merged
+
     grouped: List[str] = []
     cur = ""
     for line in lines:
@@ -1122,6 +1143,9 @@ def _selftest_citations():
         # Claude's natural blank-line-separated form (real-world observed output)
         ("**SOURCES:**\n\nAct/Standard: Income Tax Act, 1961\n\nSection/Para: Section 44AD\n\nNote: Presumptive taxation scheme for small businesses",
          {"act": "Income Tax Act, 1961", "section": "Section 44AD", "note": "Presumptive taxation scheme for small businesses"}),
+        # Claude's orphan-label-line form (label on line 1, value on line 2)
+        ("## SOURCES\n\n**Act/Standard:**\nIncome Tax Act, 1961\n\n**Section/Para:**\nSection 44AD\n\n**Note:**\nPresumptive taxation scheme",
+         {"act": "Income Tax Act, 1961", "section": "Section 44AD", "note": "Presumptive taxation scheme"}),
     ]
     for txt, expected in samples:
         got = parse_citations(txt)
