@@ -148,3 +148,37 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 - Study-plan JSON parse fallback (regex-extract first `{...}` block)
 - Migrate deprecated `@on_event` → FastAPI lifespan
 - Wire `require_user` via `Depends`
+
+---
+
+## Phase 3.5 — Production Hardening (2026-07-09)
+
+### Backend
+- `slowapi` rate limiting: auth 5/min per IP, mentor/chat 20/min/user, mentor/quick 10/min/user, study-plan 5/hour, focus 30/min/user, client-errors 10/min/IP, live/pulse 60/min/IP, default 100/min/user. 429 JSON returned.
+- `SecurityHeadersMiddleware`: HSTS, XFO=DENY, nosniff, Referrer-Policy, Permissions-Policy, COOP, CSP (with documented unsafe-* relaxations for CRA/Framer/PostHog).
+- CORS locked to `*.preview.emergentagent.com` + `*.internal.preview.emergentagent.com` + `localhost` + backend URL host; `.*` regex removed.
+- Password strength: ≥8, letter+digit, block-listed against `common_passwords.py`.
+- Password reset endpoints (stdout-only link): `/api/auth/password-reset/{request,confirm}` with URL-safe 32-byte token, 60-min TTL, single-use, generic response, session rotation on confirm.
+- Session rotation on login/signup (delete_many prior sessions).
+- GDPR-lite: `GET /api/account/export` (Content-Disposition JSON), `DELETE /api/account/delete` (cascades 9 collections).
+- `POST /api/client-errors` for ErrorBoundary telemetry (10/min/IP).
+- Structured JSON logging via `log_event()` — auth.login.ok/fail, password.reset.*, account.export/delete, client.error, ratelimit.exceeded.
+- Pydantic `ConfigDict(str_strip_whitespace=True)` + length caps on all new bodies.
+- `TTL index` on `password_reset_tokens.expires_at`.
+
+### Frontend
+- `<ErrorBoundary>` wraps App → reports to `/api/client-errors`.
+- Custom `/NotFound` (404) and `/ServerError` (500) editorial pages.
+- `/terms` and `/privacy` — 10 numbered sections, mono metadata line, vendor table listing Emergent Auth, Anthropic Claude, MongoDB, Pixabay CDN, PostHog, Google Fonts.
+- `/forgot-password` + `/reset-password` — brand-matched auth pages with `sonner` toasts.
+- Profile page → Account section with **Export JSON** and **Delete account** cards (confirm-DELETE input).
+- Global SEO via `react-helmet-async` — meta, OG, Twitter, robots/sitemap, favicon.svg, apple-touch-icon, manifest.json.
+- Skip-to-content link (`data-testid="skip-to-content"`), improved focus-visible, `prefers-reduced-motion` extended.
+- Global `sonner` `<Toaster />` (top-right, dark, brand borders).
+- Mobile: `overflow-x: hidden` on html/body; iOS-safe `font-size: 16px` on inputs at ≤640px to prevent zoom.
+
+### Test status (iteration_9)
+- Backend: **14/14 pytest PASS**
+- Frontend: **100% Phase 3.5 test-ids present + flows working**
+- Regression: Focus + Mentor + Streaks unaffected.
+
