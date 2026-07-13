@@ -6,7 +6,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { LayoutGrid, Timer, BarChart3, UserCircle2, LogOut, Settings, User as UserIcon, Sparkles, BookOpen, Radio, Newspaper, FileCheck2, Layers } from "lucide-react";
+import { LayoutGrid, Timer, BarChart3, UserCircle2, LogOut, Settings, User as UserIcon, Sparkles, BookOpen, Radio, Newspaper, FileCheck2, Layers, Building2, Briefcase, MessagesSquare } from "lucide-react";
 
 const NAV = [
   { key: "dashboard", label: "Dashboard", to: "/dashboard", icon: LayoutGrid },
@@ -17,6 +17,9 @@ const NAV = [
   { key: "hub", label: "Hub", to: "/hub", icon: Newspaper },
   { key: "mocks", label: "Mocks", to: "/mocks", icon: FileCheck2 },
   { key: "flashcards", label: "Flashcards", to: "/flashcards", icon: Layers },
+  { key: "firms", label: "Firms", to: "/firms", icon: Building2 },
+  { key: "articleship", label: "Articleship", to: "/articleship", icon: Briefcase },
+  { key: "community", label: "Community", to: "/community", icon: MessagesSquare },
   { key: "analytics", label: "Analytics", to: "/analytics", icon: BarChart3 },
   { key: "profile", label: "Profile", to: "/profile", icon: UserCircle2 },
 ];
@@ -30,6 +33,9 @@ function keyForPath(pathname) {
   if (pathname.startsWith("/hub")) return "hub";
   if (pathname.startsWith("/mocks")) return "mocks";
   if (pathname.startsWith("/flashcards")) return "flashcards";
+  if (pathname.startsWith("/firms") || pathname.startsWith("/firm-match")) return "firms";
+  if (pathname.startsWith("/articleship")) return "articleship";
+  if (pathname.startsWith("/community") || pathname.startsWith("/study-groups")) return "community";
   if (pathname.startsWith("/analytics")) return "analytics";
   if (pathname.startsWith("/profile")) return "profile";
   return "";

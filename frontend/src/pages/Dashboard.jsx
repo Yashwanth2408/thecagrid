@@ -632,9 +632,36 @@ export default function Dashboard() {
 
             <TopSubjectsCard subjects={data.top_subjects} />
             <NextUpCard />
+            <Phase6ShortcutsCard />
           </div>
         )}
       </div>
     </AppShell>
+  );
+}
+
+function Phase6ShortcutsCard() {
+  const items = [
+    { to: "/firms", label: "FIRMS", desc: "40+ reviewed CA firms", color: "#8B5CF6" },
+    { to: "/articleship", label: "ARTICLESHIP", desc: "Track days, leaves, stipend", color: "#B4FF39" },
+    { to: "/community", label: "COMMUNITY", desc: "Level-segmented forums", color: "#F59E0B" },
+    { to: "/study-groups", label: "STUDY GROUPS", desc: "Grind less alone", color: "#8B5CF6" },
+  ];
+  return (
+    <div className="col-span-12 border border-white/[0.06] p-6" data-testid="dashboard-phase6">
+      <div className="flex items-center justify-between mb-5">
+        <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#8B5CF6]">[ NEW · PHASE 6 ]</div>
+        <div className="font-mono uppercase tracking-[0.22em] text-[9.5px] text-[#5A5A62]">ARTICLESHIP · COMMUNITY</div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        {items.map((it) => (
+          <Link key={it.to} to={it.to} data-testid={`dashboard-phase6-${it.label.toLowerCase().replace(/\s/g, "-")}`} className="border border-white/[0.06] hover:border-[#8B5CF6] transition p-4 group">
+            <div className="font-mono uppercase tracking-[0.22em] text-[10px]" style={{ color: it.color }}>{it.label}</div>
+            <div className="mt-2 font-display italic text-[20px] text-white group-hover:text-[#8B5CF6] transition">{it.desc}</div>
+            <div className="mt-3 font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62]">OPEN →</div>
+          </Link>
+        ))}
+      </div>
+    </div>
   );
 }

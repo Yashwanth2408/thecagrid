@@ -166,6 +166,8 @@ def sanitize_user(u: dict) -> dict:
         "fit_score": u.get("fit_score"),
         "onboarded": bool(u.get("onboarded", False)),
         "city": u.get("city"),
+        "is_verified_ca": bool(u.get("is_verified_ca", False)),
+        "ca_membership_number": u.get("ca_membership_number"),
         "created_at": u.get("created_at"),
     }
 
@@ -1100,12 +1102,67 @@ async def mock_submit(attempt_id: str, request: Request):
         {"user_id": user["user_id"]},
         {"$inc": {"total_xp": xp}}, upsert=True,
     )
+    # Phase 6 — Weak-topic auto-schedule flashcards
+    # Bring forward up to 15 flashcards from the same paper_code so they're
+    # due today. New cards (no prior progress) are seeded due-now; existing
+    # future-due cards are pulled to today (does not overwrite mastered ones).
+    auto_scheduled = 0
+    try:
+        if weak_topics and mock.get("paper_code"):
+            paper_code = mock["paper_code"]
+            candidate_cards = await db.flashcards.find(
+                {"paper_code": paper_code}, {"_id": 0, "card_id": 1}
+            ).to_list(500)
+            cids = [c["card_id"] for c in candidate_cards]
+            if cids:
+                prog_rows = await db.user_flashcard_progress.find(
+                    {"user_id": user["user_id"], "card_id": {"$in": cids}}, {"_id": 0}
+                ).to_list(500)
+                prog_by_cid = {p["card_id"]: p for p in prog_rows}
+                today = now_utc()
+                bring_forward: list = []
+                for cid in cids:
+                    if len(bring_forward) >= 15:
+                        break
+                    p = prog_by_cid.get(cid)
+                    if p is None:
+                        bring_forward.append(("new", cid))
+                    else:
+                        # skip if already due or already mastered
+                        due = p.get("due_date")
+                        if due and (due.replace(tzinfo=timezone.utc) if due.tzinfo is None else due) <= today:
+                            continue
+                        if int(p.get("repetitions", 0)) >= 4:
+                            continue
+                        bring_forward.append(("existing", cid))
+                for kind, cid in bring_forward:
+                    if kind == "new":
+                        await db.user_flashcard_progress.update_one(
+                            {"user_id": user["user_id"], "card_id": cid},
+                            {"$set": {
+                                "user_id": user["user_id"], "card_id": cid,
+                                "ease_factor": 2.5, "interval_days": 0, "repetitions": 0,
+                                "due_date": today, "last_reviewed": None, "last_grade": None,
+                                "total_reviews": 0, "auto_scheduled_from_mock": attempt_id,
+                            }},
+                            upsert=True,
+                        )
+                    else:
+                        await db.user_flashcard_progress.update_one(
+                            {"user_id": user["user_id"], "card_id": cid},
+                            {"$set": {"due_date": today, "auto_scheduled_from_mock": attempt_id}},
+                        )
+                    auto_scheduled += 1
+    except Exception as e:
+        logger.warning(f"weak-topic auto-schedule failed: {e}")
+
     return {
         "attempt_id": attempt_id, "score": score,
         "marks_obtained": round(marks_obtained, 2), "total_marks": total_marks,
         "percentile_estimate": percentile,
         "weak_topics": weak_topics, "strong_topics": strong_topics,
         "xp_awarded": xp,
+        "auto_scheduled_flashcards": auto_scheduled,
     }
 
 
@@ -2713,6 +2770,8 @@ from seed_radar import REGULATORY_ALERTS
 from seed_content import CONTENT_POSTS
 from seed_mocks import ALL_QUESTIONS as MOCK_QUESTIONS_SEED, MOCK_TESTS
 from seed_flashcards import FLASHCARD_DECKS, FLASHCARDS
+from seed_firms import FIRMS as FIRMS_SEED, REVIEWS as FIRM_REVIEWS_SEED
+from seed_community import FORUM_CATEGORIES, SEED_THREADS, STUDY_GROUPS
 
 DEMO_SUBJECTS = ["Advanced Accounts", "Business Law", "Taxation", "Costing", "Auditing", "Financial Management"]
 
@@ -2971,7 +3030,8 @@ async def run_seed():
                 "onboarded": True,
                 "auth_provider": "email",
                 "city": "Mumbai",
-            }}
+                "is_verified_ca": False,
+            }, "$unset": {"ca_membership_number": ""}}
         )
     demo = await db.users.find_one({"email": demo_email}, {"_id": 0})
     await seed_demo_focus_data(demo["user_id"])
@@ -3084,6 +3144,114 @@ async def run_seed():
             await db.user_syllabus_progress.insert_many(rows)
             logger.info(f"Seeded demo syllabus progress ({len(rows)} rows)")
 
+    # ============================================================
+    # Phase 6 — Firms + Reviews + Community + Study Groups
+    # ============================================================
+    # Firms (upsert-style; safe to re-run)
+    if await db.firms.count_documents({}) == 0:
+        await db.firms.insert_many([{**f, "created_at": now_utc()} for f in FIRMS_SEED])
+        logger.info(f"Seeded firms ({len(FIRMS_SEED)})")
+    if await db.firm_reviews.count_documents({}) == 0:
+        rev_docs = []
+        for r in FIRM_REVIEWS_SEED:
+            rev_docs.append({
+                "review_id": f"rev_seed_{uuid.uuid4().hex[:10]}",
+                "user_id": None,  # seeded
+                "created_at": now_utc() - timedelta(days=random.randint(5, 300)),
+                "seed": True,
+                **r,
+            })
+        await db.firm_reviews.insert_many(rev_docs)
+        logger.info(f"Seeded firm reviews ({len(rev_docs)})")
+
+    # Forum categories
+    if await db.forum_categories.count_documents({}) == 0:
+        await db.forum_categories.insert_many([{**c} for c in FORUM_CATEGORIES])
+        logger.info(f"Seeded forum categories ({len(FORUM_CATEGORIES)})")
+
+    # Threads + replies
+    if await db.forum_threads.count_documents({}) == 0:
+        for thread_doc, replies, thread_upvotes in SEED_THREADS:
+            thread_doc = {**thread_doc,
+                          "author_user_id": None,
+                          "upvotes": thread_upvotes,
+                          "reply_count": len(replies),
+                          "created_at": now_utc() - timedelta(days=random.randint(2, 60)),
+                          "updated_at": now_utc() - timedelta(days=random.randint(0, 20))}
+            await db.forum_threads.insert_one(thread_doc)
+            for r in replies:
+                r_doc = {**r,
+                         "thread_id": thread_doc["thread_id"],
+                         "author_user_id": None,
+                         "created_at": now_utc() - timedelta(days=random.randint(0, 30))}
+                await db.forum_replies.insert_one(r_doc)
+        logger.info(f"Seeded forum threads ({len(SEED_THREADS)})")
+
+    # Study groups
+    if await db.study_groups.count_documents({}) == 0:
+        await db.study_groups.insert_many([{**g,
+                                            "owner_user_id": demo["user_id"] if demo else None,
+                                            "owner_initials": "D.A.",
+                                            "created_at": now_utc() - timedelta(days=random.randint(3, 45)),
+                                            } for g in STUDY_GROUPS])
+        # auto-join demo user to the first two groups if demo exists
+        if demo:
+            for g in STUDY_GROUPS[:2]:
+                await db.study_group_members.update_one(
+                    {"group_slug": g["slug"], "user_id": demo["user_id"]},
+                    {"$set": {"group_slug": g["slug"], "user_id": demo["user_id"], "role": "owner" if g == STUDY_GROUPS[0] else "member", "joined_at": now_utc()}},
+                    upsert=True,
+                )
+        logger.info(f"Seeded study groups ({len(STUDY_GROUPS)})")
+
+    # Demo articleship profile
+    if demo and not await db.articleship_profile.find_one({"user_id": demo["user_id"]}, {"_id": 0}):
+        start_dt = (now_utc() - timedelta(days=380)).date()
+        await db.articleship_profile.insert_one({
+            "user_id": demo["user_id"],
+            "firm_slug": "grant-thornton-bharat",
+            "firm_custom_name": None,
+            "start_date": start_dt.strftime("%Y-%m-%d"),
+            "end_date": (start_dt + timedelta(days=3 * 365)).strftime("%Y-%m-%d"),
+            "city": "Mumbai",
+            "practice_area": "audit",
+            "monthly_stipend": 18000,
+            "updated_at": now_utc(),
+        })
+        # a few leave records
+        await db.leave_records.insert_many([
+            {"leave_id": f"lv_seed_{uuid.uuid4().hex[:10]}", "user_id": demo["user_id"], "kind": "casual",
+             "start_date": (now_utc() - timedelta(days=100)).strftime("%Y-%m-%d"),
+             "end_date": (now_utc() - timedelta(days=99)).strftime("%Y-%m-%d"),
+             "days": 2, "reason": "Family function", "created_at": now_utc() - timedelta(days=100)},
+            {"leave_id": f"lv_seed_{uuid.uuid4().hex[:10]}", "user_id": demo["user_id"], "kind": "sick",
+             "start_date": (now_utc() - timedelta(days=60)).strftime("%Y-%m-%d"),
+             "end_date": (now_utc() - timedelta(days=59)).strftime("%Y-%m-%d"),
+             "days": 2, "reason": "Fever", "created_at": now_utc() - timedelta(days=60)},
+            {"leave_id": f"lv_seed_{uuid.uuid4().hex[:10]}", "user_id": demo["user_id"], "kind": "exam",
+             "start_date": (now_utc() - timedelta(days=200)).strftime("%Y-%m-%d"),
+             "end_date": (now_utc() - timedelta(days=180)).strftime("%Y-%m-%d"),
+             "days": 21, "reason": "Intermediate May attempt", "created_at": now_utc() - timedelta(days=200)},
+        ])
+        # a few practical logs
+        practical_seeds = [
+            (10, 6.5, "I3", ["GST", "ITC"], "Filed GSTR-3B for 4 mid-cap clients; reconciled ITC mismatch with GSTR-2B."),
+            (7, 4.0, "I5", ["Audit", "Sampling"], "Vouching sample selection for statutory audit of a listed manufacturing client."),
+            (5, 7.5, "I3", ["Direct Tax", "TDS"], "Compiled TDS returns; reviewed 194IA compliance for RE developer."),
+            (3, 5.0, "I2", ["Companies Act", "Board Resolutions"], "Drafted circular resolutions for related-party approvals."),
+            (2, 6.0, "I5", ["Audit", "Analytical Procedures"], "Ran ratio analysis on FS trends for a 3-year statutory audit."),
+        ]
+        for days_ago, hrs, pcode, tags, desc in practical_seeds:
+            await db.practical_logs.insert_one({
+                "log_id": f"lg_seed_{uuid.uuid4().hex[:10]}",
+                "user_id": demo["user_id"],
+                "log_date": (now_utc() - timedelta(days=days_ago)).strftime("%Y-%m-%d"),
+                "hours": hrs, "paper_code": pcode, "topic_tags": tags,
+                "description": desc, "created_at": now_utc() - timedelta(days=days_ago),
+            })
+        logger.info("Seeded demo articleship profile + leave + practical logs")
+
+
 @api_router.post("/seed")
 async def seed_endpoint():
     await run_seed()
@@ -3092,6 +3260,62 @@ async def seed_endpoint():
 
 # ---------- App wiring ----------
 app.include_router(api_router)
+
+# Phase 6 routers (Articleship + Community)
+from routes_articleship import router as articleship_router
+from routes_community import router as community_router
+
+# Apply rate limits before mounting so /openapi is unaffected
+articleship_router.routes  # touch for import side-effects
+
+# Wrap POST endpoints with per-user rate limits. Since limiter.limit is a
+# decorator applied at definition time, and our router routes are already
+# defined, we instead apply middleware-style limits via slowapi's built-in
+# handling on the app scope (default 100/minute). The specific tighter
+# limits below are enforced via a lightweight in-request check.
+_REVIEW_RL: dict = defaultdict(deque)   # user_id -> deque of timestamps (24h)
+_POST_RL: dict = defaultdict(deque)     # user_id -> deque of timestamps (60s)
+
+class Phase6RateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        method = request.method
+        # Fast-path non-Phase-6 or non-POST
+        if method != "POST" or not (
+            path.startswith("/api/community/")
+            or path.startswith("/api/articleship/")
+            or path.startswith("/api/firms/")
+        ):
+            return await call_next(request)
+        # Resolve user_id from cookie/header (best-effort)
+        tok = request.cookies.get("session_token") or ""
+        if not tok:
+            auth = request.headers.get("authorization") or ""
+            if auth.lower().startswith("bearer "):
+                tok = auth.split(" ", 1)[1].strip()
+        if not tok:
+            return await call_next(request)
+        now_ts = datetime.now(timezone.utc).timestamp()
+        # 5 reviews / 24h on firm reviews
+        if path.startswith("/api/firms/") and path.endswith("/reviews"):
+            q = _REVIEW_RL[tok[:24]]
+            while q and now_ts - q[0] > 86400:
+                q.popleft()
+            if len(q) >= 5:
+                return JSONResponse(status_code=429, content={"detail": "Review rate limit exceeded (5/24h)", "retry_after": 3600}, headers={"Retry-After": "3600"})
+            q.append(now_ts)
+        else:
+            # 30/minute for other community/articleship POSTs
+            q = _POST_RL[tok[:24]]
+            while q and now_ts - q[0] > 60:
+                q.popleft()
+            if len(q) >= 30:
+                return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded (30/min)", "retry_after": 60}, headers={"Retry-After": "60"})
+            q.append(now_ts)
+        return await call_next(request)
+
+app.include_router(articleship_router)
+app.include_router(community_router)
 
 # --- Rate limiter wiring ---
 app.state.limiter = limiter
@@ -3189,6 +3413,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(Phase6RateLimitMiddleware)
 
 @app.on_event("startup")
 async def startup():
@@ -3232,6 +3457,26 @@ async def startup():
         await db.flashcards.create_index("deck_id")
         await db.user_flashcard_progress.create_index([("user_id", 1), ("card_id", 1)], unique=True)
         await db.user_flashcard_progress.create_index([("user_id", 1), ("due_date", 1)])
+        # Phase 6 — Articleship + Community indexes
+        await db.firms.create_index("slug", unique=True)
+        await db.firms.create_index([("tier", 1), ("cities", 1)])
+        await db.firm_reviews.create_index("review_id", unique=True)
+        await db.firm_reviews.create_index([("firm_slug", 1), ("user_id", 1)], unique=False)
+        await db.firm_reviews.create_index([("firm_slug", 1), ("created_at", -1)])
+        await db.articleship_profile.create_index("user_id", unique=True)
+        await db.leave_records.create_index("leave_id", unique=True)
+        await db.leave_records.create_index([("user_id", 1), ("start_date", -1)])
+        await db.practical_logs.create_index("log_id", unique=True)
+        await db.practical_logs.create_index([("user_id", 1), ("log_date", -1)])
+        await db.forum_categories.create_index("category_slug", unique=True)
+        await db.forum_threads.create_index("thread_id", unique=True)
+        await db.forum_threads.create_index([("category_slug", 1), ("is_pinned", -1), ("upvotes", -1)])
+        await db.forum_replies.create_index("reply_id", unique=True)
+        await db.forum_replies.create_index([("thread_id", 1), ("created_at", 1)])
+        await db.forum_votes.create_index([("user_id", 1), ("target_type", 1), ("target_id", 1)], unique=True)
+        await db.study_groups.create_index("slug", unique=True)
+        await db.study_group_members.create_index([("group_slug", 1), ("user_id", 1)], unique=True)
+        await db.verification_requests.create_index("request_id", unique=True)
     except Exception as e:
         logger.warning(f"Index setup: {e}")
     await run_seed()

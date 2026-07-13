@@ -34,6 +34,16 @@ import Mocks from "@/pages/Mocks";
 import MockAttempt from "@/pages/MockAttempt";
 import MockResults from "@/pages/MockResults";
 import Flashcards from "@/pages/Flashcards";
+import Firms from "@/pages/Firms";
+import FirmDetail from "@/pages/FirmDetail";
+import Articleship from "@/pages/Articleship";
+import ArticleshipLog from "@/pages/ArticleshipLog";
+import FirmMatch from "@/pages/FirmMatch";
+import Community from "@/pages/Community";
+import CommunityCategory from "@/pages/CommunityCategory";
+import CommunityThread from "@/pages/CommunityThread";
+import StudyGroups from "@/pages/StudyGroups";
+import StudyGroupDetail from "@/pages/StudyGroupDetail";
 import ComingSoon from "@/pages/ComingSoon";
 import Terms from "@/pages/Terms";
 import Privacy from "@/pages/Privacy";
@@ -135,6 +145,16 @@ function RoutedApp() {
             <Route path="/mocks/:mock_id/attempt" element={<ProtectedRoute><MockAttempt /></ProtectedRoute>} />
             <Route path="/mocks/results/:attempt_id" element={<ProtectedRoute><MockResults /></ProtectedRoute>} />
             <Route path="/flashcards" element={<ProtectedRoute><Flashcards /></ProtectedRoute>} />
+            <Route path="/firms" element={<ProtectedRoute><Firms /></ProtectedRoute>} />
+            <Route path="/firms/:slug" element={<ProtectedRoute><FirmDetail /></ProtectedRoute>} />
+            <Route path="/articleship" element={<ProtectedRoute><Articleship /></ProtectedRoute>} />
+            <Route path="/articleship/log" element={<ProtectedRoute><ArticleshipLog /></ProtectedRoute>} />
+            <Route path="/firm-match" element={<ProtectedRoute><FirmMatch /></ProtectedRoute>} />
+            <Route path="/community" element={<ProtectedRoute><Community /></ProtectedRoute>} />
+            <Route path="/community/threads/:thread_id" element={<ProtectedRoute><CommunityThread /></ProtectedRoute>} />
+            <Route path="/community/:slug" element={<ProtectedRoute><CommunityCategory /></ProtectedRoute>} />
+            <Route path="/study-groups" element={<ProtectedRoute><StudyGroups /></ProtectedRoute>} />
+            <Route path="/study-groups/:slug" element={<ProtectedRoute><StudyGroupDetail /></ProtectedRoute>} />
             <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
             <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
             <Route path="/coming-soon" element={<ProtectedRoute><ComingSoon /></ProtectedRoute>} />
