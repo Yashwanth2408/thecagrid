@@ -168,6 +168,8 @@ def sanitize_user(u: dict) -> dict:
         "city": u.get("city"),
         "is_verified_ca": bool(u.get("is_verified_ca", False)),
         "ca_membership_number": u.get("ca_membership_number"),
+        "has_seen_tour": bool(u.get("has_seen_tour", False)),
+        "referred_by": u.get("referred_by"),
         "created_at": u.get("created_at"),
     }
 
@@ -240,6 +242,7 @@ class SignupBody(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=200)
     name: str = Field(min_length=1, max_length=120)
+    ref: Optional[str] = Field(default=None, max_length=32)  # Phase 7 — referral code
 
 class LoginBody(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -312,6 +315,13 @@ async def auth_signup(body: SignupBody, request: Request, response: Response):
     }
     await db.users.insert_one(doc)
     await init_user_stats(user_id, unlock_founder=True)
+    # Phase 7 — referral attribution
+    if body.ref:
+        try:
+            from routes_referral import attribute_signup
+            await attribute_signup(db, user_id, body.ref)
+        except Exception as e:
+            logger.warning(f"referral attribution failed: {e}")
     # Session rotation: signup is a fresh account, no prior sessions to purge
     token = await create_session_for_user(user_id)
     set_session_cookie(response, token)
@@ -473,6 +483,13 @@ async def save_onboarding(body: OnboardingBody, request: Request):
         if city:
             update["city"] = city[:60]
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
+    # Phase 7 — award referrer if this completes onboarding
+    if body.onboarded:
+        try:
+            from routes_referral import award_referrer_on_onboarding
+            await award_referrer_on_onboarding(db, user["user_id"])
+        except Exception as e:
+            logger.warning(f"referrer award failed: {e}")
     updated = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
     return sanitize_user(updated)
 
@@ -1164,6 +1181,20 @@ async def mock_submit(attempt_id: str, request: Request):
     except Exception as e:
         logger.warning(f"weak-topic auto-schedule failed: {e}")
 
+    # Phase 7 — notify user about their mock result
+    try:
+        from routes_notifications import create_notification
+        band = "excellent" if score >= 85 else ("strong" if score >= 70 else ("passing" if score >= 40 else "weak"))
+        await create_notification(
+            user_id=user["user_id"],
+            type_="mock_result",
+            title=f"Mock result: {round(score, 1)}% · {band}",
+            body_markdown=f"You scored {round(marks_obtained, 1)}/{total_marks}. {len(weak_topics)} weak topics identified. {auto_scheduled} flashcards auto-scheduled for revision.",
+            action_url=f"/mocks/results/{attempt_id}",
+        )
+    except Exception:
+        pass
+
     return {
         "attempt_id": attempt_id, "score": score,
         "marks_obtained": round(marks_obtained, 2), "total_marks": total_marks,
@@ -1447,6 +1478,9 @@ BADGES_SEED = [
     {"badge_id": "level_5", "name": "Level 5", "description": "Reach level 5.", "icon": "ChevronsUp", "rarity": "common"},
     {"badge_id": "level_10", "name": "Level 10", "description": "Reach level 10.", "icon": "ChevronsUp", "rarity": "rare"},
     {"badge_id": "founder_grid", "name": "Founder of the Grid", "description": "Sign up in the first month.", "icon": "Crown", "rarity": "legendary"},
+    # Phase 7 referral badges
+    {"badge_id": "grid_ambassador", "name": "Grid Ambassador", "description": "3 CAs joined The Grid via you.", "icon": "Send", "rarity": "rare"},
+    {"badge_id": "founder_circle", "name": "Founder's Circle", "description": "10 CAs joined The Grid via you.", "icon": "Crown", "rarity": "legendary"},
 ]
 
 async def unlock_badge(user_id: str, badge_id: str) -> Optional[dict]:
@@ -1456,6 +1490,18 @@ async def unlock_badge(user_id: str, badge_id: str) -> Optional[dict]:
     doc = {"user_id": user_id, "badge_id": badge_id, "unlocked_at": now_utc()}
     await db.user_achievements.insert_one(doc)
     badge = await db.achievements.find_one({"badge_id": badge_id}, {"_id": 0})
+    # Phase 7 — fire notification
+    try:
+        from routes_notifications import create_notification
+        await create_notification(
+            user_id=user_id,
+            type_="badge_unlocked",
+            title=f"Badge unlocked · {(badge or {}).get('name', badge_id)}",
+            body_markdown=(badge or {}).get("description", "You unlocked a new achievement.") or "You unlocked a new achievement.",
+            action_url="/profile",
+        )
+    except Exception:
+        pass
     return {**(badge or {}), "unlocked_at": doc["unlocked_at"]}
 
 async def check_and_unlock_badges(user_id: str, ctx: dict) -> List[dict]:
@@ -3259,6 +3305,131 @@ async def run_seed():
             })
         logger.info("Seeded demo articleship profile + leave + practical logs")
 
+    # ============================================================
+    # Phase 7 — Post-Qual Hub + Notifications + Referral seed
+    # ============================================================
+    from seed_postqual import JOBS as JOBS_SEED, CAREER_REFERRALS as REFS_SEED, MENTORS as MENTORS_SEED
+    from routes_referral import ensure_referral_code
+    from routes_notifications import create_notification
+
+    # Jobs
+    if await db.job_listings.count_documents({}) == 0:
+        docs = []
+        for j in JOBS_SEED:
+            docs.append({**j,
+                         "expires_at": now_utc() + timedelta(days=random.randint(20, 60)),
+                         "created_at": now_utc() - timedelta(days=random.randint(1, 40))})
+        await db.job_listings.insert_many(docs)
+        logger.info(f"Seeded jobs ({len(docs)})")
+
+    # Career referrals
+    if await db.career_referrals.count_documents({}) == 0:
+        docs = []
+        for r in REFS_SEED:
+            docs.append({**r, "created_at": now_utc() - timedelta(days=random.randint(2, 45))})
+        await db.career_referrals.insert_many(docs)
+        logger.info(f"Seeded career referrals ({len(docs)})")
+
+    # Mentors (create verified CA users if missing + listing)
+    if await db.mentor_listings.count_documents({}) == 0:
+        for m in MENTORS_SEED:
+            u = await db.users.find_one({"email": m["email"]}, {"_id": 0})
+            if not u:
+                uid = new_user_id()
+                await db.users.insert_one({
+                    "user_id": uid, "email": m["email"], "name": m["name"],
+                    "picture": None, "auth_provider": "email",
+                    "password_hash": hash_password("demo123"),
+                    "journey_level": "Qualified CA", "daily_goal_minutes": 60,
+                    "subjects": [], "fit_score": None, "onboarded": True,
+                    "is_verified_ca": True, "ca_membership_number": m["membership"],
+                    "city": "Mumbai",
+                    "created_at": now_utc() - timedelta(days=random.randint(30, 400)),
+                })
+                await init_user_stats(uid, unlock_founder=False)
+                u = await db.users.find_one({"user_id": uid}, {"_id": 0})
+            await db.mentor_listings.insert_one({
+                "listing_id": f"mnt_seed_{uuid.uuid4().hex[:8]}",
+                "user_id": u["user_id"],
+                "specializations": m["specializations"],
+                "bio_markdown": m["bio"],
+                "hourly_rate_inr": m["hourly_rate_inr"],
+                "availability_slots": m["availability_slots"],
+                "total_bookings": random.randint(3, 22),
+                "avg_rating": round(random.uniform(4.3, 4.9), 1),
+                "is_active": True,
+                "created_at": now_utc() - timedelta(days=random.randint(20, 250)),
+            })
+        logger.info(f"Seeded mentors ({len(MENTORS_SEED)})")
+
+    # Demo user extras — CPE, saved job, bookings, notifications, referral code
+    if demo:
+        # CPE
+        if await db.cpe_records.count_documents({"user_id": demo["user_id"]}) == 0:
+            await db.cpe_records.insert_many([
+                {"record_id": f"cpe_seed_{uuid.uuid4().hex[:8]}", "user_id": demo["user_id"],
+                 "title": "IFRS 16 Practical Application (ICAI Webinar)", "hours": 5.5, "category": "structured",
+                 "source": "ICAI webinar", "date_completed": (now_utc() - timedelta(days=60)).strftime("%Y-%m-%d"),
+                 "certificate_url": None, "verified": False,
+                 "created_at": now_utc() - timedelta(days=60)},
+                {"record_id": f"cpe_seed_{uuid.uuid4().hex[:8]}", "user_id": demo["user_id"],
+                 "title": "GST 2026 Amendments Deep-Dive", "hours": 3.0, "category": "unstructured",
+                 "source": "Self-study", "date_completed": (now_utc() - timedelta(days=15)).strftime("%Y-%m-%d"),
+                 "certificate_url": None, "verified": False,
+                 "created_at": now_utc() - timedelta(days=15)},
+            ])
+        # Save one job
+        first_job = await db.job_listings.find_one({}, {"_id": 0, "job_id": 1})
+        if first_job:
+            await db.saved_jobs.update_one(
+                {"user_id": demo["user_id"], "job_id": first_job["job_id"]},
+                {"$set": {"user_id": demo["user_id"], "job_id": first_job["job_id"], "saved_at": now_utc()}},
+                upsert=True,
+            )
+        # A mentor booking (mock-paid)
+        if await db.mentor_bookings.count_documents({"user_id": demo["user_id"]}) == 0:
+            m = await db.mentor_listings.find_one({}, {"_id": 0})
+            if m:
+                bid = f"bkg_seed_{uuid.uuid4().hex[:8]}"
+                await db.mentor_bookings.insert_one({
+                    "booking_id": bid, "mentor_id": m["listing_id"], "mentor_user_id": m["user_id"],
+                    "user_id": demo["user_id"],
+                    "slot_start": (now_utc() + timedelta(days=6)).strftime("%Y-%m-%dT19:00:00"),
+                    "slot_end": (now_utc() + timedelta(days=6)).strftime("%Y-%m-%dT20:00:00"),
+                    "topic": "Prep strategy for CA Final DT paper",
+                    "status": "confirmed", "payment_status": "mocked_paid",
+                    "hourly_rate_inr": m.get("hourly_rate_inr"),
+                    "created_at": now_utc() - timedelta(days=2),
+                    "paid_at": now_utc() - timedelta(days=2),
+                })
+
+        # Notifications — 5 recent across types
+        if await db.notifications.count_documents({"user_id": demo["user_id"]}) == 0:
+            await db.notifications.insert_many([
+                {"notification_id": f"ntf_seed_{uuid.uuid4().hex[:8]}", "user_id": demo["user_id"],
+                 "type": "streak_at_risk", "title": "Your 8-day streak needs 15 min tonight",
+                 "body_markdown": "You haven't focused today. Save your streak.", "action_url": "/focus",
+                 "is_read": False, "created_at": now_utc() - timedelta(hours=3), "read_at": None},
+                {"notification_id": f"ntf_seed_{uuid.uuid4().hex[:8]}", "user_id": demo["user_id"],
+                 "type": "mock_result", "title": "Mock result: 74% · strong",
+                 "body_markdown": "You scored 74/100. 5 weak topics identified. 10 flashcards auto-scheduled.",
+                 "action_url": "/mocks", "is_read": False, "created_at": now_utc() - timedelta(days=1), "read_at": None},
+                {"notification_id": f"ntf_seed_{uuid.uuid4().hex[:8]}", "user_id": demo["user_id"],
+                 "type": "community_reply", "title": "New reply on your thread",
+                 "body_markdown": "R.G. · Qualified CA replied to \"How do you actually enjoy Business Math?\"",
+                 "action_url": "/community", "is_read": True, "created_at": now_utc() - timedelta(days=2), "read_at": now_utc() - timedelta(days=1, hours=20)},
+                {"notification_id": f"ntf_seed_{uuid.uuid4().hex[:8]}", "user_id": demo["user_id"],
+                 "type": "badge_unlocked", "title": "Badge unlocked · Hour One",
+                 "body_markdown": "You've logged your first 60 minutes of focus. Momentum starts here.",
+                 "action_url": "/profile", "is_read": True, "created_at": now_utc() - timedelta(days=5), "read_at": now_utc() - timedelta(days=4)},
+                {"notification_id": f"ntf_seed_{uuid.uuid4().hex[:8]}", "user_id": demo["user_id"],
+                 "type": "weekly_recap", "title": "Your week — 240 min · 6 sessions · 8-day streak",
+                 "body_markdown": "You focused 240 minutes across 6 sessions this week. Streak: 8. Keep it going.",
+                 "action_url": "/analytics", "is_read": True, "created_at": now_utc() - timedelta(days=7), "read_at": now_utc() - timedelta(days=6)},
+            ])
+
+        # Referral code
+        await ensure_referral_code(db, demo["user_id"])
 
 @api_router.post("/seed")
 async def seed_endpoint():
@@ -3324,6 +3495,83 @@ class Phase6RateLimitMiddleware(BaseHTTPMiddleware):
 
 app.include_router(articleship_router)
 app.include_router(community_router)
+
+# Phase 7 routers
+from routes_postqual import router as postqual_router
+from routes_studyrooms import router as rooms_router
+from routes_notifications import router as notifications_router, register_scheduler
+from routes_referral import router as referral_router
+app.include_router(postqual_router)
+app.include_router(rooms_router)
+app.include_router(notifications_router)
+app.include_router(referral_router)
+
+
+# ---------- Phase 7 misc endpoints (feedback + status + tour flag) ----------
+
+class FeedbackBody(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    category: Literal["Bug", "Feature", "Praise", "Other"]
+    message: str = Field(min_length=5, max_length=2000)
+    url: Optional[str] = Field(default=None, max_length=500)
+
+
+@app.post("/api/feedback")
+@limiter.limit("5/minute")
+async def submit_feedback(body: FeedbackBody, request: Request):
+    user = None
+    try:
+        user = await require_user(request)
+    except HTTPException:
+        pass
+    doc = {
+        "feedback_id": f"fb_{uuid.uuid4().hex[:12]}",
+        "user_id": (user or {}).get("user_id"),
+        "user_email": (user or {}).get("email"),
+        "category": body.category,
+        "message": body.message,
+        "url": body.url,
+        "user_agent": request.headers.get("user-agent", "")[:400],
+        "created_at": now_utc(),
+    }
+    await db.feedback.insert_one(doc)
+    doc.pop("_id", None)
+    log_event("feedback.submitted", category=body.category, has_user=bool(user))
+    return {"ok": True, "feedback_id": doc["feedback_id"]}
+
+
+@app.get("/api/status")
+async def public_status():
+    """Public system status snapshot. Phase 7 uses seeded static-feel demo metrics."""
+    n = now_utc()
+    return {
+        "generated_at": n.isoformat(),
+        "status": "operational",
+        "uptime_pct_30d": 99.94,
+        "avg_latency_ms": 187,
+        "components": [
+            {"name": "API", "status": "operational"},
+            {"name": "Auth", "status": "operational"},
+            {"name": "Focus Timer", "status": "operational"},
+            {"name": "AI Mentor", "status": "operational"},
+            {"name": "Study Rooms", "status": "operational"},
+            {"name": "Notifications", "status": "operational"},
+        ],
+        "incidents": [],
+        "last_incident": None,
+        "as_of": n.strftime("%d %b %Y · %H:%M UTC"),
+    }
+
+
+class TourFlagBody(BaseModel):
+    has_seen_tour: bool = True
+
+
+@app.post("/api/users/me/tour")
+async def mark_tour_seen(body: TourFlagBody, request: Request):
+    user = await require_user(request)
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"has_seen_tour": body.has_seen_tour}})
+    return {"ok": True, "has_seen_tour": body.has_seen_tour}
 
 # --- Rate limiter wiring ---
 app.state.limiter = limiter
@@ -3485,9 +3733,46 @@ async def startup():
         await db.study_groups.create_index("slug", unique=True)
         await db.study_group_members.create_index([("group_slug", 1), ("user_id", 1)], unique=True)
         await db.verification_requests.create_index("request_id", unique=True)
+        # ---- Phase 7 indexes ----
+        await db.cpe_records.create_index("record_id", unique=True)
+        await db.cpe_records.create_index([("user_id", 1), ("date_completed", -1)])
+        await db.job_listings.create_index("job_id", unique=True)
+        await db.job_listings.create_index([("is_sponsored", -1), ("created_at", -1)])
+        await db.job_listings.create_index("domain")
+        await db.saved_jobs.create_index([("user_id", 1), ("job_id", 1)], unique=True)
+        await db.career_referrals.create_index("referral_id", unique=True)
+        await db.career_referrals.create_index([("is_open", 1), ("created_at", -1)])
+        await db.referral_applications.create_index("app_id", unique=True)
+        await db.referral_applications.create_index([("referral_id", 1), ("applicant_id", 1)], unique=True)
+        await db.mentor_listings.create_index("listing_id", unique=True)
+        await db.mentor_listings.create_index([("is_active", 1), ("avg_rating", -1)])
+        await db.mentor_bookings.create_index("booking_id", unique=True)
+        await db.mentor_bookings.create_index([("user_id", 1), ("created_at", -1)])
+        await db.study_rooms.create_index("room_id", unique=True)
+        await db.study_rooms.create_index([("code", 1), ("is_active", 1)])
+        await db.room_messages.create_index([("room_id", 1), ("created_at", -1)])
+        # 24h TTL on messages
+        await db.room_messages.create_index("created_at", expireAfterSeconds=86400)
+        await db.notifications.create_index("notification_id", unique=True)
+        await db.notifications.create_index([("user_id", 1), ("created_at", -1)])
+        await db.notifications.create_index([("user_id", 1), ("is_read", 1)])
+        await db.notification_preferences.create_index("user_id", unique=True)
+        await db.push_subscriptions.create_index("user_id", unique=True)
+        await db.referral_codes.create_index("user_id", unique=True)
+        await db.referral_codes.create_index("code", unique=True)
+        await db.referral_events.create_index("event_id", unique=True)
+        await db.referral_events.create_index([("referrer_id", 1), ("invitee_email", 1)])
+        await db.referral_events.create_index([("referrer_id", 1), ("status", 1)])
+        await db.feedback.create_index("feedback_id", unique=True)
+        await db.feedback.create_index([("created_at", -1)])
     except Exception as e:
         logger.warning(f"Index setup: {e}")
     await run_seed()
+    # Phase 7 — start scheduler after seed so any data it may need exists
+    try:
+        register_scheduler()
+    except Exception as e:
+        logger.warning(f"Scheduler setup failed (non-fatal): {e}")
 
 @app.on_event("shutdown")
 async def shutdown():

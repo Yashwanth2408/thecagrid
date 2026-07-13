@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import React, { useEffect, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import AuthShell, { GoogleLink, TextField, SubmitLink } from "@/components/AuthShell";
 import { api } from "@/lib/apiClient";
 import { useAuth } from "@/context/AuthContext";
@@ -10,15 +10,29 @@ export default function Signup() {
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [searchParams] = useSearchParams();
+  const [refInfo, setRefInfo] = useState(null);
   const { setUser } = useAuth();
   const navigate = useNavigate();
+
+  // Phase 7 — pick up ?ref= from URL or localStorage
+  useEffect(() => {
+    const q = searchParams.get("ref");
+    const ref = q || localStorage.getItem("cagrid_ref") || null;
+    if (q) localStorage.setItem("cagrid_ref", q);
+    if (ref) {
+      api.get(`/referrals/lookup?code=${encodeURIComponent(ref)}`).then((r) => setRefInfo(r.data)).catch(() => {});
+    }
+  }, [searchParams]);
 
   const onSubmit = async (e) => {
     e.preventDefault();
     setErr("");
     setBusy(true);
     try {
-      const r = await api.post("/auth/signup", { name, email, password });
+      const ref = localStorage.getItem("cagrid_ref");
+      const r = await api.post("/auth/signup", { name, email, password, ref: ref || undefined });
+      if (ref) localStorage.removeItem("cagrid_ref");
       setUser(r.data.user);
       navigate("/onboarding", { replace: true });
     } catch (ex) {
@@ -39,6 +53,11 @@ export default function Signup() {
         </>
       }
     >
+      {refInfo && (
+        <div className="mb-6 border border-[#B4FF39]/40 p-3 bg-[#B4FF39]/5" data-testid="signup-ref-banner">
+          <div className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#B4FF39]">[ INVITED BY {refInfo.referrer_first_name.toUpperCase()}{refInfo.referrer_is_verified_ca ? " · ✓ CA" : ""} · +{refInfo.welcome_bonus_xp} XP WELCOME ]</div>
+        </div>
+      )}
       <form onSubmit={onSubmit} className="space-y-8" data-testid="signup-form">
         <TextField
           label="NAME"

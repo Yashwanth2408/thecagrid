@@ -1,0 +1,56 @@
+{
+  "summary": "Phase 7 end-to-end (backend + frontend) tests. Backend: 40/40 pytest passing (0 failures, 1 skip resolved by fixing mock endpoint URL — now all 40 pass). Covers CPE CRUD+export+summary, Jobs (30 seeded, filters, save-toggle, verified-gate block+allow), Careers (8 paths + 5 certs, public), Mentors (8 seeded with mentor_name/mentor_initials/avg_rating/hourly_rate_inr, book→mock-pay flow with note='MOCKED...', payment_status flip mocked_pending→mocked_paid+status=confirmed), Referral marketplace (15+ items, duplicate apply→400), Study Rooms (create with 6-char code, host timer/start+complete+message, non-host 403), Notifications (5+ seeded, mark-read, mark-all-read, prefs GET/PUT, push-subscribe MOCKED with note), Notification hooks (mock_result created post-submit, verify), Referral (code CAGRID- prefix, invite [EMAIL] stdout, leaderboard, lookup, signup ref attribution with referred_by + demo_uid onboarding-triggered notification), Feedback POST /api/feedback OK, Status public (operational, uptime, latency, components, incidents), Tour flag persistence (POST /api/users/me/tour → auth/me.has_seen_tour=true), and Phase 1-6 regression endpoints (openapi, firms, community, articleship, syllabus, auth/me). Frontend: All 9 protected Phase 7 pages load with correct data-testids (careers-page, certs-page, jobs-page, mentors-page, cpe-page, rooms-page, notifications-page, invite-page, referrals-market-page). Notification bell + count + drawer, floating feedback widget + modal, sidebar STUDY/CONTENT/CAREER sections all render. Mentor detail navigation works. Room create→/rooms/:code flow works with room-code + room-timer testids. Invite page displays code=CAGRID-DA7306. Landing ?ref= banner visible. One critical infrastructure issue found: /status public route on preview URL is intercepted by K8s ingress (returns content-length: 1 blank response instead of the React StatusPage) — see rca section.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/mentors",
+        "issue": "Response fields use 'mentor_initials' (not 'initials' as review_request spec states). Non-blocking — frontend consumes 'mentor_initials'. Spec cleanup only."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "StatusPage (/status public route)",
+        "issue": "Preview URL https://<preview>.preview.emergentagent.com/status returns HTTP 200 with content-length: 1 (blank response, no HTML). Root cause: K8s / Cloudflare edge intercepts /status path (likely a platform-level health probe or infra reserved path) before it reaches the frontend Express server. All other frontend paths (/, /careers, /jobs, /mentors, /cpe, /rooms, /notifications, /invite, /referrals-market) serve the React shell correctly. StatusPage.jsx code itself is correct (verified by inspecting file — data-testid='status-page' + fetches /api/status).",
+        "selector": "[data-testid=\"status-page\"]",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase7.py",
+    "/app/test_reports/pytest/phase7.xml"
+  ],
+  "action_items": [
+    "HIGH: Rename the frontend /status route to something like /system-status or /platform-status because the K8s ingress reserves /status. Update: App.js route mapping, sidebar-status testid targets (footer-status, sidebar-status if any), and any references. Alternative: request platform team to unreserve /status for this app. Confirmed via curl -sIL that /status internal URL returns content-length: 1 (text/plain, no x-powered-by:Express) whereas /careers returns 7148 bytes of HTML (from Express).",
+    "OPTIONAL: Align GET /api/mentors response field naming with the spec — spec says 'initials' but backend returns 'mentor_initials'. Either update the spec doc or add both keys."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 3779 lines — was 3487 at Phase 6; keeps growing. Recommend continuing to split into feature routers (mocks, flashcards, focus, dashboard, mentor, articleship_stub) — same pattern used successfully for Phase 6/7 routers.",
+    "routes_postqual.py (471 lines) is well-structured with clear Pydantic body models + section separators; good split from server.py.",
+    "routes_studyrooms.py: _cleanup_presence uses in-memory drop of stale presence — fine for now, but presence heartbeat via ping-per-user is O(N) writes to a single room doc; consider a separate presence collection if room concurrency scales.",
+    "routes_notifications.py: register_scheduler() logs 'Phase 7 scheduler started' every backend restart — confirmed in /var/log/supervisor/backend.err.log. APScheduler jobs 'streak_at_risk', 'exam_1_week', 'weekly_recap' registered as spec'd.",
+    "Public routes (/api/careers/paths, /api/careers/compare-certs, /api/jobs, /api/jobs/{id}, /api/referrals/marketplace, /api/referrals/leaderboard, /api/referrals/lookup, /api/mentors, /api/mentors/{id}, /api/status, /api/openapi.json) all confirmed accessible without auth cookie.",
+    "MOCKED items are transparently flagged in responses: mentor mock-pay returns note='MOCKED — no real payment', /api/verify/ca accepts any 6-digit, /api/notifications/push-subscribe returns note field, [EMAIL] entries logged to stdout for referral invites & scheduled tasks. Good.",
+    "SignupBody.ref → referred_by attribution works and awards +100 XP welcome to new user; onboarding.onboarded=true triggers +200 XP to referrer and creates referral_signup notification. Verified end-to-end in test_signup_ref_attribution.",
+    "test_phase7.py uses an AuthedSession wrapper that auto re-logs-in on 401 to survive /api/seed session-cookie resets (called from test_create_job_blocked_non_verified). Tests must run serially (-n 0) — parallel xdist workers race on the shared demo user state.",
+    "One infra-level bug outside code control: /status frontend path is unreachable via the preview URL. See action_items."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase7.py"
+  ],
+  "success_rate": {
+    "backend": "100% (40/40 pytest passing)",
+    "frontend": "90% (9/10 Phase 7 pages load with correct testids; /status blocked by ingress — infra issue, code is correct)"
+  },
+  "test_credentials": "demo@cagrid.in / demo123 (Intermediate; POST /api/seed idempotent, resets is_verified_ca=false, ref code CAGRID-DA7306).",
+  "seed_data_creation": "TEST_-prefixed data left in DB: 1 TEST CPE record (removed by test), several TEST rooms (harmless), TEST referral applications, TEST_ref_*@example.com signup users (~1 per test run), TEST_invite_*@example.com invite entries in referral_events, TEST_room_*@example.com signup users, 1 TEST verified job posting. All prefixed for easy cleanup.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "test_phase7.py is the canonical Phase 7 regression suite. Run: pytest /app/backend/tests/test_phase7.py -n 0 -v (serial required due to shared demo user + /api/seed session resets). AuthedSession wrapper auto-relogins on 401 so tests survive intra-test seed calls. All 40 tests pass. Frontend: all Phase 7 testids present. Only known issue: /status frontend route is unreachable via https://<preview>.preview.emergentagent.com/status due to K8s/Cloudflare platform-level interception (returns content-length: 1 text/plain). Fix requires renaming the route on the frontend (App.js line 189) — e.g. /system-status.",
+  "rca of the issue": "Frontend /status route unreachable via preview URL. Reproduction: curl -sIL https://violet-ca-journey.preview.emergentagent.com/status → 307 redirect → https://violet-ca-journey.internal.preview.emergentagent.com/status → HTTP 200, content-length: 1, content-type: text/plain (no x-powered-by:Express, no accept-ranges, no etag — clearly NOT served by the frontend's Express server). Meanwhile curl -sIL https://violet-ca-journey.preview.emergentagent.com/careers → 200, content-length: 7148, content-type: text/html, x-powered-by: Express (correctly served by frontend). Both routes are declared identically in App.js (public, no ProtectedRoute wrapper) and StatusPage.jsx renders correctly with data-testid='status-page' as verified by direct file inspection. Root cause: the /status URL path is reserved by the K8s ingress / Cloudflare / infra layer (typical platform health-check convention) and is intercepted before it can reach the Node/Express server hosting the React app. Fix (main agent): (a) rename the route in App.js from '/status' to '/system-status' (or '/platform-status') and update the footer-status link + sidebar link testids + Landing.jsx footer to point at the new path. (b) OR request the platform team to unreserve /status for this app. Recommend option (a) since it's a self-serve code change."
+}

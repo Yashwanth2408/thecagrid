@@ -44,6 +44,22 @@ import CommunityCategory from "@/pages/CommunityCategory";
 import CommunityThread from "@/pages/CommunityThread";
 import StudyGroups from "@/pages/StudyGroups";
 import StudyGroupDetail from "@/pages/StudyGroupDetail";
+// Phase 7
+import Careers from "@/pages/Careers";
+import CertsCompare from "@/pages/CertsCompare";
+import Jobs from "@/pages/Jobs";
+import JobDetail from "@/pages/JobDetail";
+import Mentors from "@/pages/Mentors";
+import MentorDetail from "@/pages/MentorDetail";
+import MentorPay from "@/pages/MentorPay";
+import CPE from "@/pages/CPE";
+import Rooms from "@/pages/Rooms";
+import RoomDetail from "@/pages/RoomDetail";
+import Notifications from "@/pages/Notifications";
+import NotificationPrefs from "@/pages/NotificationPrefs";
+import Invite from "@/pages/Invite";
+import ReferralsMarketplace from "@/pages/ReferralsMarketplace";
+import StatusPage from "@/pages/StatusPage";
 import ComingSoon from "@/pages/ComingSoon";
 import Terms from "@/pages/Terms";
 import Privacy from "@/pages/Privacy";
@@ -155,6 +171,22 @@ function RoutedApp() {
             <Route path="/community/:slug" element={<ProtectedRoute><CommunityCategory /></ProtectedRoute>} />
             <Route path="/study-groups" element={<ProtectedRoute><StudyGroups /></ProtectedRoute>} />
             <Route path="/study-groups/:slug" element={<ProtectedRoute><StudyGroupDetail /></ProtectedRoute>} />
+            {/* Phase 7 */}
+            <Route path="/careers" element={<Careers />} />
+            <Route path="/careers/certs" element={<CertsCompare />} />
+            <Route path="/jobs" element={<Jobs />} />
+            <Route path="/jobs/:id" element={<JobDetail />} />
+            <Route path="/mentors" element={<ProtectedRoute><Mentors /></ProtectedRoute>} />
+            <Route path="/mentors/booking/:id/pay" element={<ProtectedRoute><MentorPay /></ProtectedRoute>} />
+            <Route path="/mentors/:id" element={<ProtectedRoute><MentorDetail /></ProtectedRoute>} />
+            <Route path="/cpe" element={<ProtectedRoute><CPE /></ProtectedRoute>} />
+            <Route path="/rooms" element={<ProtectedRoute><Rooms /></ProtectedRoute>} />
+            <Route path="/rooms/:code" element={<ProtectedRoute><RoomDetail /></ProtectedRoute>} />
+            <Route path="/notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
+            <Route path="/settings/notifications" element={<ProtectedRoute><NotificationPrefs /></ProtectedRoute>} />
+            <Route path="/invite" element={<ProtectedRoute><Invite /></ProtectedRoute>} />
+            <Route path="/referrals-market" element={<ProtectedRoute><ReferralsMarketplace /></ProtectedRoute>} />
+            <Route path="/status" element={<StatusPage />} />
             <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
             <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
             <Route path="/coming-soon" element={<ProtectedRoute><ComingSoon /></ProtectedRoute>} />

@@ -263,3 +263,6 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 **Test iteration 13:** 43/44 backend PASS (1 by-design skip), 100% frontend. Overall success 97.7% backend / 100% frontend. RCA'd + fixed: I3 seed-exhaustion (already-due cards now counted in auto_scheduled). `is_verified_ca` resets on `/api/seed` for deterministic tests.
 
 **MOCKED (documented):** `/api/verify/ca` — production would call ICAI membership register API. Currently accepts any 6-digit numeric string.
+
+### Future work (deferred out of Phase 6)
+- "Recruit for our firm" revenue lane on Firms page — mid-tier firms sponsoring their profile with a lead-capture form. User confirmed this idea is deferred to a post-Phase-7 monetization pass.

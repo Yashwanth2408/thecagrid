@@ -6,22 +6,46 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { LayoutGrid, Timer, BarChart3, UserCircle2, LogOut, Settings, User as UserIcon, Sparkles, BookOpen, Radio, Newspaper, FileCheck2, Layers, Building2, Briefcase, MessagesSquare } from "lucide-react";
+import { LayoutGrid, Timer, BarChart3, UserCircle2, LogOut, Settings, User as UserIcon, Sparkles, BookOpen, Radio, Newspaper, FileCheck2, Layers, Building2, Briefcase, MessagesSquare, Users2, Compass, GraduationCap, Award, Send, Handshake } from "lucide-react";
+import NotificationBell from "@/components/NotificationBell";
+import FeedbackWidget from "@/components/FeedbackWidget";
 
-const NAV = [
-  { key: "dashboard", label: "Dashboard", to: "/dashboard", icon: LayoutGrid },
-  { key: "focus", label: "Focus", to: "/focus", icon: Timer },
-  { key: "syllabus", label: "Syllabus", to: "/syllabus", icon: BookOpen },
-  { key: "mentor", label: "Mentor", to: "/mentor", icon: Sparkles },
-  { key: "radar", label: "Radar", to: "/radar", icon: Radio },
-  { key: "hub", label: "Hub", to: "/hub", icon: Newspaper },
-  { key: "mocks", label: "Mocks", to: "/mocks", icon: FileCheck2 },
-  { key: "flashcards", label: "Flashcards", to: "/flashcards", icon: Layers },
-  { key: "firms", label: "Firms", to: "/firms", icon: Building2 },
-  { key: "articleship", label: "Articleship", to: "/articleship", icon: Briefcase },
-  { key: "community", label: "Community", to: "/community", icon: MessagesSquare },
-  { key: "analytics", label: "Analytics", to: "/analytics", icon: BarChart3 },
-  { key: "profile", label: "Profile", to: "/profile", icon: UserCircle2 },
+const NAV_SECTIONS = [
+  {
+    heading: "STUDY",
+    items: [
+      { key: "dashboard", label: "Dashboard", to: "/dashboard", icon: LayoutGrid },
+      { key: "focus", label: "Focus", to: "/focus", icon: Timer },
+      { key: "mocks", label: "Mocks", to: "/mocks", icon: FileCheck2 },
+      { key: "flashcards", label: "Flashcards", to: "/flashcards", icon: Layers },
+      { key: "syllabus", label: "Syllabus", to: "/syllabus", icon: BookOpen },
+      { key: "mentor", label: "Mentor", to: "/mentor", icon: Sparkles },
+    ],
+  },
+  {
+    heading: "CONTENT",
+    items: [
+      { key: "radar", label: "Radar", to: "/radar", icon: Radio },
+      { key: "hub", label: "Hub", to: "/hub", icon: Newspaper },
+      { key: "community", label: "Community", to: "/community", icon: MessagesSquare },
+      { key: "rooms", label: "Rooms", to: "/rooms", icon: Users2 },
+    ],
+  },
+  {
+    heading: "CAREER",
+    items: [
+      { key: "firms", label: "Firms", to: "/firms", icon: Building2 },
+      { key: "articleship", label: "Articleship", to: "/articleship", icon: Briefcase },
+      { key: "careers", label: "Careers", to: "/careers", icon: Compass },
+      { key: "jobs", label: "Jobs", to: "/jobs", icon: FileCheck2 },
+      { key: "mentors", label: "Mentors", to: "/mentors", icon: GraduationCap },
+      { key: "referrals-market", label: "Refer Market", to: "/referrals-market", icon: Handshake },
+      { key: "invite", label: "Invite", to: "/invite", icon: Send },
+      { key: "cpe", label: "CPE", to: "/cpe", icon: Award, verifiedOnly: true },
+      { key: "analytics", label: "Analytics", to: "/analytics", icon: BarChart3 },
+      { key: "profile", label: "Profile", to: "/profile", icon: UserCircle2 },
+    ],
+  },
 ];
 
 function keyForPath(pathname) {
@@ -36,6 +60,13 @@ function keyForPath(pathname) {
   if (pathname.startsWith("/firms") || pathname.startsWith("/firm-match")) return "firms";
   if (pathname.startsWith("/articleship")) return "articleship";
   if (pathname.startsWith("/community") || pathname.startsWith("/study-groups")) return "community";
+  if (pathname.startsWith("/rooms")) return "rooms";
+  if (pathname.startsWith("/careers")) return "careers";
+  if (pathname.startsWith("/jobs")) return "jobs";
+  if (pathname.startsWith("/mentors")) return "mentors";
+  if (pathname.startsWith("/referrals-market")) return "referrals-market";
+  if (pathname.startsWith("/invite")) return "invite";
+  if (pathname.startsWith("/cpe")) return "cpe";
   if (pathname.startsWith("/analytics")) return "analytics";
   if (pathname.startsWith("/profile")) return "profile";
   return "";
@@ -73,7 +104,7 @@ export default function AppShell({ children, breadcrumb }) {
           <div className="justify-self-center font-mono uppercase tracking-[0.24em] text-[11px] text-[#8B8B92]" data-testid="app-breadcrumb">
             {crumb}
           </div>
-          <div className="justify-self-end flex items-center gap-5">
+          <div className="justify-self-end flex items-center gap-3">
             <div className="flex items-center gap-2 font-mono tabular-nums text-[13px]" data-testid="nav-streak-flame">
               <FlameIdle />
               <span className="text-[#B4FF39] font-medium">{streak}</span>
@@ -85,6 +116,7 @@ export default function AppShell({ children, breadcrumb }) {
             >
               <span className="text-[9.5px] text-[#5A5A62]">L</span>{level}
             </div>
+            <NotificationBell />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
@@ -117,26 +149,32 @@ export default function AppShell({ children, breadcrumb }) {
       </header>
 
       <div className="flex-1 flex">
-        <aside className="hidden md:flex flex-col w-16 py-8 gap-2 border-r border-white/[0.06] bg-[#0A0A0C]/60 backdrop-blur" data-testid="app-sidebar">
-          {NAV.map((n) => {
-            const Icon = n.icon;
-            const active = n.key === activeKey;
-            return (
-              <Link
-                key={n.key}
-                to={n.to}
-                className="relative mx-3 h-11 flex items-center justify-center group"
-                data-testid={`sidebar-${n.key}`}
-                title={n.label}
-              >
-                {active && <span className="absolute -left-3 top-1/2 -translate-y-1/2 w-[3px] h-6 bg-[#8B5CF6]" />}
-                <Icon className={`w-5 h-5 transition-colors ${active ? "text-[#F2F2F2]" : "text-[#5A5A62] group-hover:text-[#F2F2F2]"}`} strokeWidth={1.5} />
-              </Link>
-            );
-          })}
+        <aside className="hidden md:flex flex-col w-16 py-6 gap-1 border-r border-white/[0.06] bg-[#0A0A0C]/60 backdrop-blur overflow-y-auto max-h-[calc(100vh-64px)]" data-testid="app-sidebar">
+          {NAV_SECTIONS.map((section) => (
+            <React.Fragment key={section.heading}>
+              <div className="mx-3 mt-3 mb-1 font-mono uppercase tracking-[0.18em] text-[8px] text-[#3A3A42] text-center">{section.heading}</div>
+              {section.items.filter((n) => !n.verifiedOnly || user?.is_verified_ca).map((n) => {
+                const Icon = n.icon;
+                const active = n.key === activeKey;
+                return (
+                  <Link
+                    key={n.key}
+                    to={n.to}
+                    className="relative mx-3 h-9 flex items-center justify-center group"
+                    data-testid={`sidebar-${n.key}`}
+                    title={n.label}
+                  >
+                    {active && <span className="absolute -left-3 top-1/2 -translate-y-1/2 w-[3px] h-6 bg-[#8B5CF6]" />}
+                    <Icon className={`w-[18px] h-[18px] transition-colors ${active ? "text-[#F2F2F2]" : "text-[#5A5A62] group-hover:text-[#F2F2F2]"}`} strokeWidth={1.5} />
+                  </Link>
+                );
+              })}
+            </React.Fragment>
+          ))}
         </aside>
         <main className="flex-1 min-w-0">{children}</main>
       </div>
+      <FeedbackWidget />
     </div>
   );
 }

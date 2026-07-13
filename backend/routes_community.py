@@ -212,6 +212,20 @@ async def create_reply(thread_id: str, body: ReplyBody, request: Request):
     }
     await db.forum_replies.insert_one(doc)
     await db.forum_threads.update_one({"thread_id": thread_id}, {"$inc": {"reply_count": 1}, "$set": {"updated_at": _now()}})
+    # Phase 7 — notify thread author if not self-reply
+    try:
+        author_id = th.get("author_user_id")
+        if author_id and author_id != user["user_id"]:
+            from routes_notifications import create_notification
+            await create_notification(
+                user_id=author_id,
+                type_="community_reply",
+                title=f"New reply on your thread",
+                body_markdown=f"{doc['author_initials']} · {doc['author_level']} replied to \"{th.get('title','')[:60]}\"",
+                action_url=f"/community/threads/{thread_id}",
+            )
+    except Exception:
+        pass
     log_event("community.reply.created", user_id=user["user_id"], thread_id=thread_id)
     doc.pop("_id", None)
     return doc

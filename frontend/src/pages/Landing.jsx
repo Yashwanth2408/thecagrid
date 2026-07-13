@@ -631,10 +631,14 @@ function Footer() {
         ))}
       </div>
       <div className="mt-20 max-w-[1440px] mx-auto px-8 lg:px-16 flex flex-wrap items-end justify-between gap-6">
-        <div className="flex items-center gap-6 font-mono uppercase tracking-[0.22em] text-[11px] text-[#8B8B92]">
+        <div className="flex flex-wrap items-center gap-4 md:gap-6 font-mono uppercase tracking-[0.22em] text-[11px] text-[#8B8B92]">
           <Link to="/" className="hover:text-[#F2F2F2]">Manifesto</Link>
           <Link to="/login" className="hover:text-[#F2F2F2]" data-testid="nav-login-link">Log in</Link>
           <Link to="/signup" className="hover:text-[#F2F2F2]" data-testid="nav-signup-link">Sign up</Link>
+          <Link to="/status" className="hover:text-[#F2F2F2]" data-testid="footer-status">Status</Link>
+          <Link to="/invite" className="hover:text-[#F2F2F2]" data-testid="footer-invite">Referral</Link>
+          <Link to="/terms" className="hover:text-[#F2F2F2]" data-testid="footer-terms">Terms</Link>
+          <Link to="/privacy" className="hover:text-[#F2F2F2]" data-testid="footer-privacy">Privacy</Link>
         </div>
         <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#5A5A62]">
           [ built in India · 2026 · v0.1 ]
@@ -671,9 +675,25 @@ function TopNav() {
 
 export default function Landing() {
   const { pulse, updatedAt } = usePulse();
+  const [refInfo, setRefInfo] = useState(null);
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const ref = p.get("ref");
+    if (ref) {
+      localStorage.setItem("cagrid_ref", ref);
+      import("@/lib/apiClient").then(({ api }) => {
+        api.get(`/referrals/lookup?code=${encodeURIComponent(ref)}`).then((r) => setRefInfo(r.data)).catch(() => {});
+      });
+    }
+  }, []);
   return (
     <div className="relative min-h-screen bg-[#0A0A0C] text-[#F2F2F2]">
       <GridBackground />
+      {refInfo && (
+        <div className="relative z-30 bg-[#B4FF39] text-black text-center py-2 px-4" data-testid="landing-ref-banner">
+          <span className="font-mono uppercase tracking-[0.22em] text-[11px]">[ {refInfo.referrer_first_name.toUpperCase()} INVITED YOU TO THE GRID · +{refInfo.welcome_bonus_xp} XP ON SIGNUP · <Link to="/signup" className="underline">CLAIM →</Link> ]</span>
+        </div>
+      )}
       <TopNav />
       <div className="relative">
         <Hero pulse={pulse} />
