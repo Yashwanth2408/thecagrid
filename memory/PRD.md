@@ -209,3 +209,28 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 - Regression: All Phase 1-3.5 flows intact; account export includes syllabus_progress + dismissed_alerts.
 - HubPost fix applied by tester: `<title>{`${post.title} · …`}</title>` template literal to avoid Helmet children-array crash.
 
+
+---
+
+## Phase 4.5 fix pass + Phase 5 — Assessment Engine (2026-07-13)
+
+### Phase 4 fixes shipped
+- Radar `/summary.unread_count` — cache invalidation on `POST /radar/alerts/{id}/dismiss` (pop user's key from `_RADAR_SUMMARY_CACHE`).
+- Content posts count bumped to 22, 6 tagged `Foundation`.
+- `/content/posts?tag=X` now drops the auto user-level constraint (explicit tag intent wins). Explicit `?level=X` still combines with `?tag`.
+- Radar chapter chips now link `/syllabus?paper=X&chapter=Y`. Syllabus page reads params, auto-expands paper, scrolls chapter row into view with acid-green box-shadow glow that fades after 2.5s.
+
+### Phase 5 — Assessment Engine
+- **Backend**: `question_bank` (~90 real ICAI-style Q's), `mock_tests` (8 seeded across F2/I3/I4/I5/P1/P4/P5), `mock_attempts`, `mock_answers`, `flashcard_decks` (10), `flashcards` (~150), `user_flashcard_progress`. New indexes across all Phase 5 collections. Account export/delete cascades now cover `mock_attempts`, `mock_answers`, `user_flashcard_progress`.
+- **Endpoints**: `GET /mocks`, `POST /mocks/{id}/start`, `POST /mocks/attempts/{aid}/answer`, `POST /mocks/attempts/{aid}/submit` (10/min limit), `GET /mocks/attempts/history`, `GET /mocks/attempts/{aid}`, `GET /flashcards/decks`, `GET /flashcards/decks/{id}/queue`, `POST /flashcards/review` (60/min), `GET /flashcards/stats`.
+- **SM-2 lite**: grade 0 → repetitions=0, interval=0; grade ≥1 → repetitions++, ease adjusts, interval grows 1 → 3/6 → prev × ease. Verified: grade=3 on new card → reps=1, interval=1, ease>2.5, +5 XP.
+- **XP**: mock submit +50/+100/+150 based on 0/70/85% thresholds. Flashcard review +5 for good/easy, +2 for hard, 0 for again.
+- **Seed**: demo has 3 submitted attempts (scores 22/46/42), 40 flashcard progress rows (12 due, 12 mastered, 16 future).
+- **Frontend**: `/mocks` editorial index with difficulty dots + best-score column, `/mocks/{id}/attempt` full-viewport test UI with sticky timer + question navigator + keyboard nav + auto-save, `/mocks/results/{aid}` score band + topic breakdown + collapsible question review + next-action chips, `/flashcards` deck picker + review mode with SPACE flip + 1/2/3/4 grade shortcuts.
+- **Dashboard**: 2 new bento cards (MocksCard with best score, FlashcardsCard with due-today count).
+- **Sidebar**: Mocks (FileCheck2) + Flashcards (Layers) icons added between Hub and Analytics.
+
+### Test status
+- iteration_11: 15/17 pytest — 2 real bugs found (export missing new collections, tag filter AND with auto level).
+- iteration_12: 13/13 PASS. `retest_needed: false`.
+- Frontend was 100% in iter11 and unchanged in iter12.
