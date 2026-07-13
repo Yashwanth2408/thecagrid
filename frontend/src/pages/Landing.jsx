@@ -635,7 +635,7 @@ function Footer() {
           <Link to="/" className="hover:text-[#F2F2F2]">Manifesto</Link>
           <Link to="/login" className="hover:text-[#F2F2F2]" data-testid="nav-login-link">Log in</Link>
           <Link to="/signup" className="hover:text-[#F2F2F2]" data-testid="nav-signup-link">Sign up</Link>
-          <Link to="/status" className="hover:text-[#F2F2F2]" data-testid="footer-status">Status</Link>
+          <Link to="/system-status" className="hover:text-[#F2F2F2]" data-testid="footer-status">Status</Link>
           <Link to="/invite" className="hover:text-[#F2F2F2]" data-testid="footer-invite">Referral</Link>
           <Link to="/terms" className="hover:text-[#F2F2F2]" data-testid="footer-terms">Terms</Link>
           <Link to="/privacy" className="hover:text-[#F2F2F2]" data-testid="footer-privacy">Privacy</Link>

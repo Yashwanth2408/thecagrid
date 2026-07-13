@@ -186,7 +186,7 @@ function RoutedApp() {
             <Route path="/settings/notifications" element={<ProtectedRoute><NotificationPrefs /></ProtectedRoute>} />
             <Route path="/invite" element={<ProtectedRoute><Invite /></ProtectedRoute>} />
             <Route path="/referrals-market" element={<ProtectedRoute><ReferralsMarketplace /></ProtectedRoute>} />
-            <Route path="/status" element={<StatusPage />} />
+            <Route path="/system-status" element={<StatusPage />} />
             <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
             <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
             <Route path="/coming-soon" element={<ProtectedRoute><ComingSoon /></ProtectedRoute>} />

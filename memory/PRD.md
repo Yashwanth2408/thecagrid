@@ -266,3 +266,33 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 
 ### Future work (deferred out of Phase 6)
 - "Recruit for our firm" revenue lane on Firms page — mid-tier firms sponsoring their profile with a lead-capture form. User confirmed this idea is deferred to a post-Phase-7 monetization pass.
+
+### Phase 7 — FINAL feature phase
+
+**Split into 4 new routers** (server.py stays at ~3.8k, all new work in dedicated files):
+- `routes_postqual.py` — CPE + Careers + Jobs + Mentors + Referral marketplace
+- `routes_studyrooms.py` — Study rooms + timer + chat + presence (30s heartbeat)
+- `routes_notifications.py` — Notification CRUD + prefs + APScheduler jobs (streak_at_risk 20:00 IST, exam_1_week 08:00 IST, weekly_recap Mon 08:00 IST). Emails logged as `[EMAIL]` stdout lines.
+- `routes_referral.py` — invite loop with ?ref= attribution, +100 XP invitee welcome, +200 XP referrer on onboarding, ambassador (3) + founder-circle (10) badges.
+
+**14 new frontend pages:** `/careers`, `/careers/certs`, `/jobs`, `/jobs/:id`, `/mentors`, `/mentors/:id`, `/mentors/booking/:id/pay`, `/cpe`, `/rooms`, `/rooms/:code`, `/notifications`, `/settings/notifications`, `/invite`, `/referrals-market`, `/system-status`.
+
+**Sidebar reorganized** into STUDY / CONTENT / CAREER sections with mono uppercase separators.
+
+**Notification bell** with unread count in top nav (checks every 60s). **Feedback widget** floats bottom-left (Bug/Feature/Praise/Other). **Onboarding tour** fires once on first `/dashboard` visit (4 steps, skip/next/finish → POST `/api/users/me/tour`).
+
+**MOCKED items:**
+- `POST /api/mentors/booking/{id}/mock-pay` — 900ms fake processing, always succeeds, returns `note='MOCKED...'`. Pay page shows "DEMO PAYMENT — NO CARD CHARGED". TODO in code to wire Razorpay/Stripe.
+- `POST /api/notifications/push-subscribe` — stores subscription object but does not fire real push.
+- All scheduled reminders log `[EMAIL] to=... subject=... body=...` to stdout instead of SMTP.
+- Phase 6's `POST /api/verify/ca` unchanged.
+
+**Route renamed:** `/status` → `/system-status` because K8s ingress reserves `/status`.
+
+**Test iteration 14:** 100% backend (40/40 pytest), 100% frontend after rename (was 90% due to ingress issue). Editorial dark design maintained. Zero regressions across Phase 1-6.
+
+### Phase 7 — Future items deferred
+- Real-time chat inside study rooms currently uses 30s heartbeat + poll — future migration to WebSocket for sub-second latency.
+- Real ICAI membership register API integration for `/api/verify/ca`.
+- Real payment gateway (Razorpay/Stripe) for mentor bookings.
+- Real push notification delivery (Web Push VAPID keys required).

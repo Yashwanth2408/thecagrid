@@ -358,6 +358,7 @@ async def list_mentors(request: Request, specialization: Optional[str] = None, m
         u = users.get(l["user_id"]) or {}
         l["mentor_name"] = u.get("name")
         l["mentor_initials"] = "".join([p[0].upper() for p in (u.get("name") or "?").split()][:2])
+        l["initials"] = l["mentor_initials"]  # alias for spec compatibility
         l["mentor_city"] = u.get("city")
         l["is_verified_ca"] = bool(u.get("is_verified_ca", True))
     return {"items": listings, "count": len(listings)}
