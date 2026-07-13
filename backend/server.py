@@ -738,13 +738,19 @@ async def radar_summary(request: Request):
 async def content_posts(request: Request, level: Optional[str] = None, tag: Optional[str] = None, limit: int = 30):
     user = await get_current_user(request)
     q_and = []
-    lvl = level or (user.get("journey_level") if user else None)
-    if lvl and lvl != "all":
-        # Match level in either level_filter OR tags (belt & suspenders)
-        q_and.append({"$or": [{"level_filter": lvl}, {"tags": lvl}]})
+    # If tag is explicitly provided, we do NOT auto-apply the user's journey level —
+    # the caller is asking for a specific slice, and forcing an AND with the user's
+    # level filters out posts that don't share the user's level (e.g., Foundation posts
+    # for an Intermediate user searching by tag=Foundation).
     if tag:
-        # Match tag in either tags OR level_filter (so ?tag=Foundation returns Foundation-level posts too)
         q_and.append({"$or": [{"tags": tag}, {"level_filter": tag}]})
+    else:
+        lvl = level or (user.get("journey_level") if user else None)
+        if lvl and lvl != "all":
+            q_and.append({"$or": [{"level_filter": lvl}, {"tags": lvl}]})
+    # Explicit level param still applied on top of tag (for advanced callers)
+    if level and level != "all" and tag:
+        q_and.append({"$or": [{"level_filter": level}, {"tags": level}]})
     q = {"$and": q_and} if q_and else {}
     posts = await db.content_posts.find(q, {"_id": 0, "body_markdown": 0}).sort("published_at", -1).limit(min(limit, 100)).to_list(100)
     return {"items": posts, "count": len(posts)}
@@ -2582,6 +2588,10 @@ async def account_export(request: Request):
     study_plans = await db.study_plans.find({"user_id": uid}).to_list(1000)
     syllabus_progress = await db.user_syllabus_progress.find({"user_id": uid}).to_list(2000)
     dismissed_alerts = await db.user_dismissed_alerts.find({"user_id": uid}).to_list(500)
+    mock_attempts_ = await db.mock_attempts.find({"user_id": uid}).to_list(2000)
+    attempt_ids = [a.get("attempt_id") for a in mock_attempts_]
+    mock_answers_ = await db.mock_answers.find({"attempt_id": {"$in": attempt_ids}}).to_list(20000) if attempt_ids else []
+    flashcard_progress = await db.user_flashcard_progress.find({"user_id": uid}).to_list(2000)
 
     payload = {
         "exported_at": now_utc().isoformat(),
@@ -2597,6 +2607,9 @@ async def account_export(request: Request):
         "study_plans": _norm(study_plans),
         "syllabus_progress": _norm(syllabus_progress),
         "dismissed_alerts": _norm(dismissed_alerts),
+        "mock_attempts": _norm(mock_attempts_),
+        "mock_answers": _norm(mock_answers_),
+        "user_flashcard_progress": _norm(flashcard_progress),
     }
     log_event("account.export", user_id=uid, ip=_client_ip(request))
     filename = f"cagrid-export-{uid}-{now_utc().strftime('%Y%m%d')}.json"

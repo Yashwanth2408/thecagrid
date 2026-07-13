@@ -1,0 +1,36 @@
+{
+  "summary": "Focused retest of the two backend bugs from iteration_11. BOTH FIXES VERIFIED GREEN. 13/13 pytest cases pass. FIX 1: GET /api/content/posts?tag=Foundation now returns >=4 posts for the Intermediate demo user (the auto user-level constraint is correctly dropped when the caller explicitly passes ?tag). Anonymous /api/content/posts with no query params still returns >=22 posts (no regression for unauth callers). Explicit ?tag=Foundation&level=Foundation combo still respects both — every returned row has Foundation in either level_filter or tags. FIX 2: GET /api/account/export payload now includes all three new keys — mock_attempts (>=3 rows from seed), mock_answers (list, joined by attempt_id), user_flashcard_progress (>=40 rows from seed). No _id leakage in any row. All prior keys (profile, user_stats, sessions_redacted, focus_sessions, daily_focus, achievements, mentor_sessions, mentor_messages, study_plans, syllabus_progress, dismissed_alerts) are still present. session_token is [REDACTED] in sessions_redacted. Regression: /api/openapi.json public (200), all security headers on every response (X-Frame-Options=DENY, X-Content-Type-Options=nosniff, HSTS, CSP, Referrer-Policy), demo login sets session_token cookie, /mocks, /mocks/attempts/history, /flashcards/decks, /flashcards/stats, /radar/summary all 200.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter12_retest.py",
+    "/app/test_reports/pytest/iter12_retest.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "content_posts() fix in server.py line ~737-756: when ?tag is present, user-level auto-constraint is dropped and tag is matched against both `tags` and `level_filter` via $or — this correctly returns Foundation-tagged/level posts for an Intermediate user. When both ?tag and ?level are supplied, the explicit level is ANDed on top for advanced callers. Clean, spec-aligned solution.",
+    "account_export() in server.py line ~2560-2619: mock_attempts fetched with {user_id: uid}, mock_answers correctly joined via {attempt_id: {$in: [...]}}, user_flashcard_progress fetched by user_id. All three passed through _norm() so _id is stripped and session_token/password_hash would be REDACTED (though those keys don't appear in these collections). Symmetry with delete-cascade block is now restored — GDPR-lite gap closed.",
+    "server.py is now 3242 lines — still 4.5x the 700-line guideline. Recommend splitting mocks/flashcards/content into separate routers in a future refactor pass; not blocking.",
+    "iter11's seed-data quality concern remains open (Foundation BL mock includes Direct Tax/GST topic-tagged questions) but is outside the scope of this fix pass."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter12_retest.py"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13 pytest passing)",
+    "frontend": "not retested this pass — was 100% in iter11 and no frontend code changed"
+  },
+  "test_credentials": "demo@cagrid.in / demo123 (verified — POST /api/seed restores demo pw and reseeds mock_attempts/user_flashcard_progress).",
+  "seed_data_creation": "POST /api/seed called once at module setup to guarantee demo pw + Phase 5 seed rows exist. Tests only read from /api/account/export and /api/content/posts — no mutations.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Both iter11 bugs are now closed. Next iteration is free to move on to new features. If any future change touches /api/content/posts filter logic OR /api/account/export payload, re-run tests/test_iter12_retest.py — it locks in the two contracts (>=4 Foundation posts for Intermediate demo, and mock_attempts/mock_answers/user_flashcard_progress keys in export). Endpoint reminder: mocks history is /api/mocks/attempts/history (NOT /api/mocks/history). Run pytest with -n 0 (serial) — xdist loadscope can cause cross-worker cookie collisions on the demo login rate limit.",
+  "rca of the issue": "Both fixes match the RCA documented in iter11. Fix 1 (content_posts) implemented as option A: `if tag: q_and.append({'$or': [{'tags': tag}, {'level_filter': tag}]})` and skips the automatic user-level constraint in that branch — verified by test_tag_foundation_returns_at_least_4 (returned >=4 for Intermediate demo). Fix 2 (account_export) added three new fetches (mock_attempts, mock_answers joined on attempt_ids, user_flashcard_progress) and included them in the payload dict — verified by test_export_includes_mock_and_flashcard_arrays with seeded volumes >=3 attempts and >=40 flashcard progress rows."
+}
