@@ -1161,72 +1161,133 @@ CONTENT_POSTS = [
         hero_grad=["#7C3AED", "#F59E0B", "#0A0A0C"],
     ),
     _post(
-        slug="career-non-audit-paths",
-        title="Careers outside audit: five paths worth considering",
-        excerpt="Corporate finance, investment banking, tax advisory, controllership, and treasury. The trade-offs at year 1, year 5, and year 10.",
+        slug="foundation-contract-act-framework",
+        title="Foundation Business Laws: the Contract Act framework",
+        excerpt="The Indian Contract Act is 20% of Paper 2. Here's the section-by-section framework that makes it a scoring chapter.",
         body_md=(
-            "## Path 1 — Investment Banking\n\n"
-            "**Year 1:** Grinding on pitch decks and DCF models. 70-90 hour weeks. "
-            "Very high starting compensation. Steep learning curve on financial "
-            "modelling and industry-specific insight.\n\n"
-            "**Year 5:** Vice President level (in most banks). Managing deals, "
-            "less modelling, more client-facing. Compensation up 2-3x from year 1.\n\n"
-            "**Year 10:** Director / MD. You bring in the deals. Compensation "
-            "is deal-driven and can be very high, but so are the demands.\n\n"
-            "**Fit:** People who like being right-under-pressure, are comfortable "
-            "with intense hours in the first 5-7 years, and are motivated by both "
-            "high compensation and the intellectual variety of deals.\n\n"
-            "## Path 2 — Corporate Finance (Industry)\n\n"
-            "**Year 1:** Analyst in an FP&A or Treasury team at a large corporate. "
-            "Building models, analysing variances, drafting board materials. 45-60 "
-            "hour weeks.\n\n"
-            "**Year 5:** Manager, running a specific piece of the finance "
-            "function. Some team ownership.\n\n"
-            "**Year 10:** Head of a function (FP&A, Business Finance) or "
-            "controllership. Path to CFO for a subset.\n\n"
-            "**Fit:** People who want structured hours, ownership of a business "
-            "problem, and a clear path from analytical work to strategic "
-            "leadership.\n\n"
-            "## Path 3 — Tax Advisory (Big 4 / Boutique)\n\n"
-            "**Year 1:** Working on complex tax structures for clients — transfer "
-            "pricing, international tax, indirect tax. Cognitive work is very "
-            "high; hours moderate (55-65 average).\n\n"
-            "**Year 5:** Senior Manager. You lead client engagements. Strong "
-            "technical depth in your chosen area.\n\n"
-            "**Year 10:** Partner track. Client-facing, business development, "
-            "your practice's P&L.\n\n"
-            "**Fit:** People who love the puzzle-solving of tax law and the "
-            "long, mentored relationship arc with clients.\n\n"
-            "## Path 4 — Controllership\n\n"
-            "**Year 1:** Financial reporting, month-end close, IFRS/Ind AS "
-            "conversions. Relatively structured hours.\n\n"
-            "**Year 5:** Controller for a business unit or a mid-size company. "
-            "Real ownership of the financial statements.\n\n"
-            "**Year 10:** Group Controller or CFO for a mid-size company. High "
-            "responsibility, moderate compensation ceiling (unless you go PE-"
-            "backed or listed).\n\n"
-            "**Fit:** People who love clean financial statements more than they "
-            "love strategy. This is the highest-craftsmanship path.\n\n"
-            "## Path 5 — Treasury\n\n"
-            "**Year 1:** Cash management, forex hedging, working-capital "
-            "operations. Compensation moderate.\n\n"
-            "**Year 5:** Senior Treasury Manager. Responsibility for company's "
-            "hedge programme, debt profile, banking relationships.\n\n"
-            "**Year 10:** Group Treasurer. Strategic risk management. Reports "
-            "directly to CFO.\n\n"
-            "**Fit:** People who are drawn to derivatives, foreign exchange, and "
-            "risk management — the quantitative side of finance without the deal "
-            "grind of banking.\n\n"
-            "## How to choose\n\n"
-            "Do a two-week internship in year 3 of articleship in whichever path "
-            "attracts you most. Two weeks is enough to know if the day-to-day "
-            "energises or drains you. Everything else is speculation."
+            "## Why the Contract Act is your friend\n\n"
+            "The Indian Contract Act, 1872 is the single highest-yield chapter of Foundation "
+            "Paper 2. It's 20% of the paper, it's static (unlike Companies Act which keeps "
+            "changing), and it rewards structured memorisation.\n\n"
+            "The Act is 266 sections but Foundation only cares about the general principles "
+            "(Sec 1-75). Here's the framework I use with every student.\n\n"
+            "## Layer 1 — the definition ladder (Sec 2)\n\n"
+            "Learn Sec 2 like a ladder. It's the foundation for every question:\n"
+            "- **2(a) Proposal** → **2(b) Promise (proposal accepted)** → **2(c) Promisor & Promisee**\n"
+            "- **2(d) Consideration** → **2(e) Agreement (promise + consideration)** → **2(f) Reciprocal Promises**\n"
+            "- **2(g) Void Agreement** → **2(h) Contract (enforceable agreement)** → **2(i) Voidable** → **2(j) Discharged**\n\n"
+            "Memorise this ladder cold — half of the 6-mark theory questions come straight "
+            "from these definitions.\n\n"
+            "## Layer 2 — essentials of a valid contract (Sec 10)\n\n"
+            "1. Offer + Acceptance (Sec 3-9)\n"
+            "2. Intention to create legal relations (implied)\n"
+            "3. Lawful consideration (Sec 23-25)\n"
+            "4. Capacity to contract (Sec 11-12)\n"
+            "5. Free consent (Sec 13-22)\n"
+            "6. Lawful object (Sec 23)\n"
+            "7. Not expressly declared void (Sec 24-30)\n"
+            "8. Certainty & possibility of performance (Sec 29)\n"
+            "9. Legal formalities (writing, registration where required)\n\n"
+            "Any question on 'when is a contract valid' expects this list. Marks are for "
+            "completeness, not brilliance.\n\n"
+            "## Layer 3 — the vitiating factors (Sec 13-22)\n\n"
+            "- **Coercion (Sec 15)** — pressure through illegal acts. Contract voidable at "
+            "  the option of the aggrieved party.\n"
+            "- **Undue Influence (Sec 16)** — misuse of dominant position. Voidable.\n"
+            "- **Fraud (Sec 17)** — intentional misrepresentation with intent to deceive. Voidable.\n"
+            "- **Misrepresentation (Sec 18)** — innocent false statement. Voidable.\n"
+            "- **Mistake of Fact (Sec 20/22)** — bilateral mistake: void. Unilateral: usually "
+            "  valid unless it concerns identity or subject matter.\n"
+            "- **Mistake of Law** — Indian law: no relief. Foreign law: treated as fact.\n\n"
+            "The trick: every one of these makes the contract *voidable*, not *void* — except "
+            "bilateral mistake of fact which is void ab initio.\n\n"
+            "## Layer 4 — special contracts\n\n"
+            "- **Indemnity (Sec 124-125)** vs **Guarantee (Sec 126-147)** — memorise the 6-point "
+            "  difference table (parties, liability, recovery, subrogation, notice, purpose).\n"
+            "- **Bailment (Sec 148-181)** — delivery of goods for a purpose. Note the "
+            "  bailee's duties (care, no unauthorised use, return with accretions).\n"
+            "- **Agency (Sec 182-238)** — actual vs implied vs ostensible authority. Termination "
+            "  triggers.\n\n"
+            "## What to memorise verbatim\n\n"
+            "Sec 2 definitions, Sec 10 essentials, Sec 11 capacity, Sec 16 undue influence, "
+            "Sec 23 lawful consideration exceptions, Sec 25 exceptions to no-consideration rule. "
+            "These six sections quoted verbatim in an answer earn a full presentation-mark bonus.\n\n"
+            "## The 10 landmark cases you must know\n\n"
+            "Carlill v Carbolic Smoke Ball · Balfour v Balfour · Mohori Bibee v Dharmodas Ghose · "
+            "Chinnaya v Ramayya · Lalman Shukla v Gauri Datt · Harvey v Facey · Hyde v Wrench · "
+            "Rose & Frank Co · Currie v Misa · Kedarnath v Gorie Mohammed.\n\n"
+            "Learn the one-line ratio of each. Cite one in every relevant answer for a bonus mark."
         ),
-        author_name="Nikhil Aiyar",
-        author_role="CA · Talent Advisory",
-        tags=["Career", "Specialisation"],
-        levels=["Final", "Qualified CA", "Articleship"],
-        days=88,
-        hero_grad=["#10B981", "#F59E0B", "#0A0A0C"],
+        author_name="Meera Balakrishnan",
+        author_role="CA · Foundation Faculty",
+        tags=["Foundation", "Business Laws", "Contract Act"],
+        levels=["Foundation", "Aspiring"],
+        days=90,
+        hero_grad=["#8B5CF6", "#B4FF39", "#0A0A0C"],
+    ),
+    _post(
+        slug="foundation-first-mock-day-plan",
+        title="Foundation: the day you take your first mock",
+        excerpt="What to do before, during, and after your first Foundation mock. A calm playbook that removes 80% of the panic.",
+        body_md=(
+            "## The night before\n\n"
+            "- Print out your admit card format if using paper mocks; test your laptop and "
+            "  charger if online.\n"
+            "- Lay out: black pen (2), pencil (1), eraser, sharpener, water bottle, spare "
+            "  calculator, ICAI-permitted watch. No phone.\n"
+            "- Skim the syllabus table of contents — one pass, 30 minutes max. Not deep study.\n"
+            "- Sleep by 10:30pm. This is not the day to grind.\n\n"
+            "## Morning of\n\n"
+            "- Wake up 2.5 hours before the mock. Shower. Real breakfast. Coffee if you drink it, "
+            "  but not more than usual — new caffeine tolerance in a stress environment is a bad idea.\n"
+            "- Walk for 15 minutes. It resets nervous energy.\n"
+            "- Arrive 30 minutes early. Sit. Breathe. Do NOT talk to other panicking students.\n\n"
+            "## The first 5 minutes of the paper\n\n"
+            "This is where most students lose marks silently. What to do:\n\n"
+            "1. Read every instruction on the front page. Every one.\n"
+            "2. Do a rapid **paper scan** — flip through all pages, note the total questions, "
+            "  the mark distribution, any surprising formats.\n"
+            "3. Identify one 'easy' question (usually a bookwork theory question) and one 'hard' "
+            "  question. Mark them mentally.\n"
+            "4. Start with the easy one. NOT question 1. The easy one. Getting 6 marks in the "
+            "  first 5 minutes builds confidence for the rest of the paper.\n\n"
+            "## Time management by paper (Foundation)\n\n"
+            "- **Paper 1 (Accounting)** — 3 hours for 100 marks. Aim: ~1.8 minutes per mark. "
+            "  Numerical questions eat time — start with the shortest first.\n"
+            "- **Paper 2 (Business Laws + BCR)** — 3 hours. Laws section first (mechanical), "
+            "  BCR after (creative energy needed).\n"
+            "- **Paper 3 (Quant)** — 2 hours (MCQ). Set aside 90 minutes for questions, 30 for "
+            "  review. Negative marking so DON'T guess randomly.\n"
+            "- **Paper 4 (BE + BCK)** — 2 hours (MCQ). Same as Paper 3 discipline.\n\n"
+            "## During the paper\n\n"
+            "- **Presentation**: leave a 1-inch left margin. Number each answer clearly. Write "
+            "  the question number in the margin. Underline key terms in your answer.\n"
+            "- **When stuck**: skip. Do not spend more than 1.5x the time budget on any single "
+            "  question. Return at the end.\n"
+            "- **Working notes**: even wrong workings earn marks if they show correct methodology. "
+            "  Always show workings on numerical questions.\n\n"
+            "## The last 15 minutes\n\n"
+            "- Review the questions you skipped. Attempt something on each — a bad attempt "
+            "  earns more than a blank.\n"
+            "- Check assumptions on numerical answers. One misread of a rate or a date can "
+            "  cost 4 marks silently.\n"
+            "- Do NOT change MCQ answers unless you're 90% sure. First-instinct answers are "
+            "  usually right; second-guessing loses marks statistically.\n\n"
+            "## After the paper\n\n"
+            "- Do NOT discuss the paper with anyone. Every discussion afterward will convince "
+            "  you that you got a question wrong. It's not useful.\n"
+            "- Rest. Eat. Prep for the next paper.\n\n"
+            "## The mental model\n\n"
+            "Treat your first mock as **diagnostic**, not judgment. Its purpose is to reveal "
+            "which chapters need more work, how your time management holds up, and where your "
+            "presentation leaks marks. The score is the least useful output — the analysis of "
+            "*why* you got each mark or missed it is where the value lives."
+        ),
+        author_name="Meera Balakrishnan",
+        author_role="CA · Foundation Faculty",
+        tags=["Foundation", "Strategy", "Mocks"],
+        levels=["Foundation", "Aspiring"],
+        days=92,
+        hero_grad=["#B4FF39", "#0A0A0C", "#8B5CF6"],
     ),
 ]

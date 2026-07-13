@@ -30,6 +30,10 @@ import Syllabus from "@/pages/Syllabus";
 import Radar from "@/pages/Radar";
 import Hub from "@/pages/Hub";
 import HubPost from "@/pages/HubPost";
+import Mocks from "@/pages/Mocks";
+import MockAttempt from "@/pages/MockAttempt";
+import MockResults from "@/pages/MockResults";
+import Flashcards from "@/pages/Flashcards";
 import ComingSoon from "@/pages/ComingSoon";
 import Terms from "@/pages/Terms";
 import Privacy from "@/pages/Privacy";
@@ -89,7 +93,7 @@ function RoutedApp() {
 
   // Hide drawer on Mentor page itself + landing/auth/legal/error pages
   const drawerHiddenPaths = ["/", "/login", "/signup", "/onboarding", "/mentor", "/terms", "/privacy", "/forgot-password", "/reset-password"];
-  const drawerVisible = user && !drawerHiddenPaths.some((p) => location.pathname === p || location.pathname.startsWith("/mentor")) && !location.pathname.startsWith("/hub/");
+  const drawerVisible = user && !drawerHiddenPaths.some((p) => location.pathname === p || location.pathname.startsWith("/mentor")) && !location.pathname.startsWith("/hub/") && !location.pathname.includes("/attempt");
 
   return (
     <>
@@ -127,6 +131,10 @@ function RoutedApp() {
             <Route path="/radar" element={<ProtectedRoute><Radar /></ProtectedRoute>} />
             <Route path="/hub" element={<ProtectedRoute><Hub /></ProtectedRoute>} />
             <Route path="/hub/:slug" element={<ProtectedRoute><HubPost /></ProtectedRoute>} />
+            <Route path="/mocks" element={<ProtectedRoute><Mocks /></ProtectedRoute>} />
+            <Route path="/mocks/:mock_id/attempt" element={<ProtectedRoute><MockAttempt /></ProtectedRoute>} />
+            <Route path="/mocks/results/:attempt_id" element={<ProtectedRoute><MockResults /></ProtectedRoute>} />
+            <Route path="/flashcards" element={<ProtectedRoute><Flashcards /></ProtectedRoute>} />
             <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
             <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
             <Route path="/coming-soon" element={<ProtectedRoute><ComingSoon /></ProtectedRoute>} />

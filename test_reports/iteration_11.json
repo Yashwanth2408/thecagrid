@@ -1,0 +1,50 @@
+{
+  "summary": "Phase 5 (Mock Tests + Flashcards + SM-2) and Phase 4 fix-pass verified. Backend: 15/17 pytest cases PASS (1 skipped, 2 failed — both actionable bugs described below). All Phase 5 endpoints (/mocks list, start, answer, submit, history, attempt detail, /flashcards decks, queue, review, stats) work correctly. SM-2 math verified strictly: grade=3 on new card → reps=1, interval=1, ease>2.5, xp=5; grade=0 on reps>=3 card → reps=0, interval=0, xp=0. Rate limit /mocks/attempts/*/submit hits 429 with Retry-After. Radar unread_count strictly decrements after dismiss (cache invalidation works). /api/content/posts?level=Foundation non-empty. Frontend: /mocks lists 8 mocks with best-score, /flashcards lists 10 decks with due/mastered/total, /mocks/:id/attempt renders 15-question nav grid, timer, options; SUBMIT modal → confirm → /mocks/results/:aid renders with mock-result-score, topic breakdown bars. Flashcard flip + all 4 grade buttons work. Radar → Syllabus deep-link (?paper=I5&chapter=ch_ea3eb7356f) works with acid-green box-shadow (rgb(180,255,57)) glow on chapter row. Sidebar and Dashboard testids all present (sidebar-mocks, sidebar-flashcards, dashboard-mocks with '4 attempted / BEST SCORE 46%', dashboard-flashcards with '120 due').",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/account/export", "issue": "Response missing 'mock_attempts' and 'user_flashcard_progress' arrays. Spec (regression check) and delete-cascade both include these collections; export was not updated. Add mock_attempts + mock_answers + user_flashcard_progress to the export payload in server.py account_export() around line 2586.", "priority": "HIGH"},
+      {"endpoint": "GET /api/content/posts?tag=Foundation", "issue": "Returns only 3 posts when caller is logged in as Intermediate demo user (spec expects >=4 with level_filter cross-match). Endpoint AND-combines user's journey_level with the explicit tag filter, so 3 Aspiring/Foundation-only posts (post_foundationfirst3, post_foundationcontra, post_foundationfirstm) are excluded. Fix: when 'tag' query param is explicitly provided, DROP the automatic user-level constraint (or use OR instead of AND across the two clauses).", "priority": "HIGH"}
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/mocks/results/att_... for F2 mock", "issues": ["Topic breakdown for mock_f2_bl (Foundation Business Laws — Warm-up) includes non-BL topics like Direct Tax, GST, Capital Gains, Input Tax Credit, Place of Supply, House Property, PGBP, Salaries etc. Suggests the mock's question_ids array pulls from other papers' questions. Seed data quality concern — a Foundation BL mock should aggregate only BL/Contract Act/Companies Act topics."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase5_mocks_flashcards.py",
+    "/app/test_reports/pytest/iter11_phase5.xml"
+  ],
+  "action_items": [
+    "Fix /api/account/export to include mock_attempts, mock_answers, user_flashcard_progress arrays (currently only delete-cascade includes them — asymmetry).",
+    "Fix /api/content/posts endpoint so explicit ?tag=X drops the implicit journey_level constraint (or ORs the two filters). Currently ?tag=Foundation returns 3 posts for Intermediate demo user; spec expects >=4.",
+    "Review seed_mocks.py for mock_f2_bl question_ids — topic breakdown shows Direct-Tax/GST topics that don't belong in a Foundation Business Laws warm-up."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 3228 lines — Phase 5 added ~350 LoC of mocks + flashcards routes inline (past the 700-line guideline by ~4.5x). Strongly recommend splitting into /app/backend/routers/mocks.py + flashcards.py in the next iteration; also move _sm2 helper into a util module.",
+    "_strip_question_for_attempt at line 903 correctly strips correct_option, explanation_markdown, model_answer_markdown for in-progress attempts. Verified — no leakage on /mocks/{id}/start responses.",
+    "mock_start is idempotent for in-progress attempts (line 941 — reuses existing attempt_id if status='in_progress'). Good.",
+    "mock_answer upserts on (attempt_id, question_id) — no duplicate rows on double-answer. Verified.",
+    "mock_submit correctly transitions status to 'submitted' and rejects late /answer calls with 400. Rate-limited at 10/min (verified 429 with Retry-After header).",
+    "_sm2 math verified: grade=0 resets reps+interval to 0 but preserves ease. grade>=1 increments reps, sets interval to 1 (reps==1) then 6 (reps==2, grade>=2), then interval*ease (reps>=3). Ease update formula ease + (0.1 - (3-g)*(0.08 + (3-g)*0.02)) matches SM-2 lite spec.",
+    "Radar summary cache invalidation on dismiss (line 693 _RADAR_SUMMARY_CACHE.pop(uid, None)) works — verified unread_count strictly decreases after dismiss.",
+    "Cache in _RADAR_SUMMARY_CACHE still lives in-process (multiple workers may diverge). Acceptable for MVP.",
+    "Deep-link on /syllabus (?paper=X&chapter=Y) auto-scrolls chapter into view with acid-green box-shadow (rgb(180,255,57)) applied inline — verified in DOM after redirect from /radar. Style is added inline; consider promoting to CSS class for maintainability.",
+    "Account export omission of mock_attempts + user_flashcard_progress is a GDPR-lite gap — users deleting their account would lose data they never had the chance to export. Delete cascade DOES wipe those collections (lines 2642, 2644), so the asymmetry is real.",
+    "MockAttempt UI: mock-submit is inside the confirm modal (line 248, MockAttempt.jsx) and mock-submit-open is the top-right button (line 118) — matches spec.",
+    "seed_mocks.py for mock_f2_bl (Foundation BL) appears to include question IDs whose topic_tags include Direct Tax / GST / Salaries — topic-breakdown on results page shows unrelated Intermediate topics."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase5_mocks_flashcards.py"
+  ],
+  "success_rate": {"backend": "88% (15/17 pytest passing, 1 skipped, 2 failed → both actionable bugs listed)", "frontend": "100% — all Phase 5 flows work: mocks list, mock attempt end-to-end, results page, flashcards deck+review with grade buttons + flip, radar→syllabus deep-link with acid-green glow, dashboard cards, sidebar links"},
+  "test_credentials": "demo@cagrid.in / demo123 (verified). Demo user has 3 pre-seeded submitted mock attempts (scores 22/46/42) as expected. During testing I created 1 additional submitted attempt on mock_i3_tax_speed (via pytest) and 1 on mock_f2_bl (via Playwright) — history now has 5+ attempts.",
+  "seed_data_creation": "Test artifacts created during this run: (a) 1 new submitted attempt on mock_i3_tax_speed via pytest (marks all A, score varies); (b) 1 new submitted attempt on mock_f2_bl via Playwright (Q1=A only, score 0%); (c) mutations on 1 flashcard in deck_i3_dt_core (grade=3 on unstudied → now reps=1); (d) mutations on 1 other card graded 0 to reset reps 3→0; (e) 1 more radar alert dismissed for demo (specific id varies). POST /api/seed re-run will restore mocks/flashcards/content/radar collections but NOT user_flashcard_progress or mock_attempts (those preserve across seeds).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Two backend bugs remain: (1) account/export missing mock_attempts + user_flashcard_progress arrays — verify by GET /api/account/export and assert both keys exist as lists; (2) /api/content/posts?tag=Foundation returns only 3 for demo/Intermediate user — fix must return >=4 by dropping implicit user-level AND when tag is explicitly passed. All other Phase 5 tests are green. The pytest file test_phase5_mocks_flashcards.py should run with `pytest tests/test_phase5_mocks_flashcards.py -n 0` (serial) — under xdist loadscope the demo_session fixture is created per-worker per-module and second-worker's cookies get 401 on some endpoints (likely rate-limit on parallel login within same IP). Serial run is deterministic. Consider using function-scope requests.Session with reseed at module setUp to work under xdist.",
+  "rca of the issue": "Bug 1 (account/export gap): Phase 5 added mock_attempts + mock_answers + user_flashcard_progress collections; the delete-cascade block was updated (lines 2642-2644) but the parallel export block (lines 2574-2599) was NOT. Fix: add `mock_attempts = await db.mock_attempts.find({'user_id': uid}).to_list(2000)` (+ mock_answers, + user_flashcard_progress) and include in payload dict. Bug 2 (content posts tag+level AND): endpoint at line 738 builds `q_and` with BOTH the user-level filter AND the tag filter; since these are ANDed, an Intermediate user can never see posts whose level_filter+tags don't intersect Intermediate. The 3 Foundation-only posts (level=['Foundation','Aspiring']) get filtered out. Fix option A: skip the automatic level filter when 'tag' query param is present. Fix option B: convert q_and to q_or so any match on level OR tag passes. Spec wording ('some via level_filter cross-match') suggests option A (explicit tag wins)."
+}

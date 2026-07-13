@@ -689,6 +689,8 @@ async def radar_alert_dismiss(alert_id: str, request: Request):
         {"$set": {"dismissed_at": now_utc()}},
         upsert=True,
     )
+    # Invalidate this user's summary cache so the next call is fresh
+    _RADAR_SUMMARY_CACHE.pop(user["user_id"], None)
     return {"ok": True}
 
 
@@ -733,14 +735,17 @@ async def radar_summary(request: Request):
 # ---------- CONTENT HUB ----------
 
 @api_router.get("/content/posts")
-async def content_posts(request: Request, level: Optional[str] = None, tag: Optional[str] = None, limit: int = 20):
+async def content_posts(request: Request, level: Optional[str] = None, tag: Optional[str] = None, limit: int = 30):
     user = await get_current_user(request)
-    q: dict = {}
+    q_and = []
     lvl = level or (user.get("journey_level") if user else None)
     if lvl and lvl != "all":
-        q["level_filter"] = lvl
+        # Match level in either level_filter OR tags (belt & suspenders)
+        q_and.append({"$or": [{"level_filter": lvl}, {"tags": lvl}]})
     if tag:
-        q["tags"] = tag
+        # Match tag in either tags OR level_filter (so ?tag=Foundation returns Foundation-level posts too)
+        q_and.append({"$or": [{"tags": tag}, {"level_filter": tag}]})
+    q = {"$and": q_and} if q_and else {}
     posts = await db.content_posts.find(q, {"_id": 0, "body_markdown": 0}).sort("published_at", -1).limit(min(limit, 100)).to_list(100)
     return {"items": posts, "count": len(posts)}
 
@@ -873,6 +878,396 @@ async def recap_weekly(request: Request):
         "badges_earned": badges_earned,
         "regulatory_critical_unread": critical_unread,
         "next_week_focus": next_focus,
+    }
+
+
+# ============================================================
+# PHASE 5 — Assessment Engine (Mocks + Flashcards + SM-2)
+# ============================================================
+
+class MockAnswerBody(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    question_id: str = Field(min_length=1, max_length=32)
+    selected_option: Optional[str] = Field(default=None, max_length=4)
+    subjective_text: Optional[str] = Field(default=None, max_length=8000)
+    time_spent_seconds: int = Field(ge=0, le=100000)
+
+
+class FlashcardReviewBody(BaseModel):
+    model_config = ConfigDict()
+    card_id: str = Field(min_length=1, max_length=32)
+    grade: int = Field(ge=0, le=3)
+    time_spent_seconds: int = Field(ge=0, le=100000)
+
+
+def _strip_question_for_attempt(q: dict) -> dict:
+    """Remove correct_option and explanation from question for in-progress attempts."""
+    return {k: v for k, v in q.items() if k not in ("correct_option", "explanation_markdown", "model_answer_markdown")}
+
+
+@api_router.get("/mocks")
+async def mocks_list(request: Request, paper: Optional[str] = None):
+    user = await require_user(request)
+    q: dict = {}
+    if paper:
+        q["paper_code"] = paper
+    mocks = await db.mock_tests.find(q, {"_id": 0}).to_list(200)
+    # Enrich with user's best score
+    out = []
+    for m in mocks:
+        attempts = await db.mock_attempts.find(
+            {"user_id": user["user_id"], "mock_id": m["mock_id"], "status": "submitted"},
+            {"_id": 0, "score": 1}
+        ).to_list(200)
+        best = max([a.get("score") or 0 for a in attempts], default=None)
+        out.append({
+            "mock_id": m["mock_id"], "paper_code": m["paper_code"], "title": m["title"],
+            "duration_minutes": m["duration_minutes"], "total_marks": m["total_marks"],
+            "question_count": len(m.get("question_ids", [])),
+            "difficulty_profile": m.get("difficulty_profile", "balanced"),
+            "attempts_count": len(attempts),
+            "best_score": best,
+        })
+    return {"items": out, "count": len(out)}
+
+
+@api_router.post("/mocks/{mock_id}/start")
+async def mock_start(mock_id: str, request: Request):
+    user = await require_user(request)
+    mock = await db.mock_tests.find_one({"mock_id": mock_id}, {"_id": 0})
+    if not mock:
+        raise HTTPException(status_code=404, detail="Mock not found")
+    # If in-progress attempt exists, return it
+    existing = await db.mock_attempts.find_one(
+        {"user_id": user["user_id"], "mock_id": mock_id, "status": "in_progress"}, {"_id": 0}
+    )
+    if existing:
+        attempt_id = existing["attempt_id"]
+    else:
+        attempt_id = f"att_{uuid.uuid4().hex[:14]}"
+        await db.mock_attempts.insert_one({
+            "attempt_id": attempt_id,
+            "user_id": user["user_id"],
+            "mock_id": mock_id,
+            "paper_code": mock["paper_code"],
+            "started_at": now_utc(),
+            "submitted_at": None,
+            "status": "in_progress",
+            "time_taken_seconds": 0,
+            "score": None, "marks_obtained": None,
+            "total_marks": mock["total_marks"],
+            "percentile_estimate": None,
+            "weak_topics": [], "strong_topics": [],
+        })
+    # Fetch questions in order
+    q_ids = mock.get("question_ids", [])
+    docs = await db.question_bank.find({"question_id": {"$in": q_ids}}, {"_id": 0}).to_list(500)
+    docs_by_id = {d["question_id"]: d for d in docs}
+    questions = [_strip_question_for_attempt(docs_by_id[qid]) for qid in q_ids if qid in docs_by_id]
+    return {
+        "attempt_id": attempt_id,
+        "mock_id": mock_id, "title": mock["title"],
+        "started_at": (existing or {}).get("started_at") or now_utc(),
+        "duration_minutes": mock["duration_minutes"],
+        "total_marks": mock["total_marks"],
+        "questions": questions,
+    }
+
+
+async def _get_attempt_owned(attempt_id: str, user_id: str, allow_submitted: bool = False):
+    att = await db.mock_attempts.find_one({"attempt_id": attempt_id, "user_id": user_id}, {"_id": 0})
+    if not att:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+    if not allow_submitted and att["status"] != "in_progress":
+        raise HTTPException(status_code=400, detail="Attempt already submitted")
+    return att
+
+
+@api_router.post("/mocks/attempts/{attempt_id}/answer")
+async def mock_answer(attempt_id: str, body: MockAnswerBody, request: Request):
+    user = await require_user(request)
+    await _get_attempt_owned(attempt_id, user["user_id"])
+    doc = {
+        "attempt_id": attempt_id,
+        "question_id": body.question_id,
+        "selected_option": body.selected_option,
+        "subjective_text": body.subjective_text,
+        "time_spent_seconds": body.time_spent_seconds,
+        "updated_at": now_utc(),
+    }
+    await db.mock_answers.update_one(
+        {"attempt_id": attempt_id, "question_id": body.question_id},
+        {"$set": doc},
+        upsert=True,
+    )
+    return {"saved": True}
+
+
+@api_router.post("/mocks/attempts/{attempt_id}/submit")
+@limiter.limit("10/minute")
+async def mock_submit(attempt_id: str, request: Request):
+    user = await require_user(request)
+    att = await _get_attempt_owned(attempt_id, user["user_id"])
+    mock = await db.mock_tests.find_one({"mock_id": att["mock_id"]}, {"_id": 0})
+    if not mock:
+        raise HTTPException(status_code=404, detail="Mock definition missing")
+    q_ids = mock.get("question_ids", [])
+    docs = await db.question_bank.find({"question_id": {"$in": q_ids}}, {"_id": 0}).to_list(500)
+    q_by_id = {d["question_id"]: d for d in docs}
+    ans_docs = await db.mock_answers.find({"attempt_id": attempt_id}, {"_id": 0}).to_list(500)
+    ans_by_qid = {a["question_id"]: a for a in ans_docs}
+
+    marks_obtained = 0.0
+    total_marks = 0
+    topic_totals: dict = {}
+    topic_correct: dict = {}
+    for qid in q_ids:
+        q = q_by_id.get(qid)
+        if not q:
+            continue
+        total_marks += q.get("marks", 2)
+        ans = ans_by_qid.get(qid)
+        awarded = 0.0
+        is_correct = None
+        auto_graded = False
+        if not ans:
+            marks_awarded = 0.0
+        elif q["type"] == "mcq":
+            if ans.get("selected_option") is None:
+                marks_awarded = 0.0
+            elif ans["selected_option"] == q.get("correct_option"):
+                marks_awarded = float(q.get("marks", 2))
+                is_correct = True
+            else:
+                marks_awarded = -float(q.get("negative_marks", 0) or 0)
+                is_correct = False
+        else:  # subjective / case_study — auto-grade at 60% as placeholder
+            if ans.get("subjective_text"):
+                marks_awarded = 0.6 * float(q.get("marks", 5))
+                auto_graded = True
+                is_correct = None
+            else:
+                marks_awarded = 0.0
+        marks_obtained += marks_awarded
+        # Update answer with grading
+        await db.mock_answers.update_one(
+            {"attempt_id": attempt_id, "question_id": qid},
+            {"$set": {"is_correct": is_correct, "marks_awarded": marks_awarded, "auto_graded": auto_graded}},
+            upsert=True,
+        )
+        # Topic aggregation
+        for tag in q.get("topic_tags", []) or []:
+            topic_totals[tag] = topic_totals.get(tag, 0) + 1
+            if is_correct:
+                topic_correct[tag] = topic_correct.get(tag, 0) + 1
+
+    weak_topics = [t for t, tot in topic_totals.items() if (topic_correct.get(t, 0) / tot) < 0.5]
+    strong_topics = [t for t, tot in topic_totals.items() if (topic_correct.get(t, 0) / tot) >= 0.8]
+
+    score = round(max(0.0, marks_obtained) / total_marks * 100, 1) if total_marks > 0 else 0.0
+    # Percentile — rank vs other submitted attempts on this mock
+    all_scores = await db.mock_attempts.find(
+        {"mock_id": att["mock_id"], "status": "submitted"}, {"_id": 0, "score": 1}
+    ).to_list(2000)
+    scores = [s.get("score") or 0 for s in all_scores]
+    rank_below = sum(1 for s in scores if s < score)
+    percentile = round(rank_below / max(1, len(scores) + 1) * 100)
+    time_taken = int((now_utc() - att["started_at"].replace(tzinfo=timezone.utc) if att["started_at"].tzinfo is None else now_utc() - att["started_at"]).total_seconds())
+
+    await db.mock_attempts.update_one(
+        {"attempt_id": attempt_id},
+        {"$set": {
+            "status": "submitted", "submitted_at": now_utc(),
+            "marks_obtained": round(marks_obtained, 2),
+            "total_marks": total_marks,
+            "score": score,
+            "time_taken_seconds": time_taken,
+            "percentile_estimate": percentile,
+            "weak_topics": weak_topics, "strong_topics": strong_topics,
+        }},
+    )
+    # XP awards
+    xp = 50
+    if score >= 70: xp += 50
+    if score >= 85: xp += 50
+    await db.user_stats.update_one(
+        {"user_id": user["user_id"]},
+        {"$inc": {"total_xp": xp}}, upsert=True,
+    )
+    return {
+        "attempt_id": attempt_id, "score": score,
+        "marks_obtained": round(marks_obtained, 2), "total_marks": total_marks,
+        "percentile_estimate": percentile,
+        "weak_topics": weak_topics, "strong_topics": strong_topics,
+        "xp_awarded": xp,
+    }
+
+
+@api_router.get("/mocks/attempts/history")
+async def mocks_attempts_history(request: Request, limit: int = 20):
+    user = await require_user(request)
+    rows = await db.mock_attempts.find(
+        {"user_id": user["user_id"]}, {"_id": 0}
+    ).sort("started_at", -1).limit(min(limit, 100)).to_list(100)
+    return {"items": rows, "count": len(rows)}
+
+
+@api_router.get("/mocks/attempts/{attempt_id}")
+async def mock_attempt_detail(attempt_id: str, request: Request):
+    user = await require_user(request)
+    att = await _get_attempt_owned(attempt_id, user["user_id"], allow_submitted=True)
+    mock = await db.mock_tests.find_one({"mock_id": att["mock_id"]}, {"_id": 0})
+    q_ids = mock.get("question_ids", []) if mock else []
+    docs = await db.question_bank.find({"question_id": {"$in": q_ids}}, {"_id": 0}).to_list(500)
+    q_by_id = {d["question_id"]: d for d in docs}
+    ans_docs = await db.mock_answers.find({"attempt_id": attempt_id}, {"_id": 0}).to_list(500)
+    ans_by_qid = {a["question_id"]: a for a in ans_docs}
+    is_submitted = att["status"] == "submitted"
+    questions_out = []
+    for qid in q_ids:
+        q = q_by_id.get(qid)
+        if not q:
+            continue
+        item = _strip_question_for_attempt(q) if not is_submitted else q
+        item["user_answer"] = ans_by_qid.get(qid)
+        questions_out.append(item)
+    return {
+        "attempt": att,
+        "mock": {"title": (mock or {}).get("title"), "paper_code": att.get("paper_code"), "duration_minutes": (mock or {}).get("duration_minutes")},
+        "questions": questions_out,
+    }
+
+
+# ---------- FLASHCARDS ----------
+
+@api_router.get("/flashcards/decks")
+async def flashcards_decks(request: Request, paper: Optional[str] = None):
+    user = await require_user(request)
+    q: dict = {}
+    if paper:
+        q["paper_code"] = paper
+    decks = await db.flashcard_decks.find(q, {"_id": 0}).to_list(100)
+    today = now_utc()
+    out = []
+    for d in decks:
+        # Cards in deck
+        card_ids = [c["card_id"] for c in await db.flashcards.find({"deck_id": d["deck_id"]}, {"_id": 0, "card_id": 1}).to_list(500)]
+        # User's progress on those cards
+        prog = await db.user_flashcard_progress.find({"user_id": user["user_id"], "card_id": {"$in": card_ids}}, {"_id": 0}).to_list(500)
+        prog_by_id = {p["card_id"]: p for p in prog}
+        due_today = 0
+        mastered = 0
+        for cid in card_ids:
+            p = prog_by_id.get(cid)
+            if not p:
+                due_today += 1
+                continue
+            due = p.get("due_date")
+            if due and (due.replace(tzinfo=timezone.utc) if due.tzinfo is None else due) <= today:
+                due_today += 1
+            if p.get("repetitions", 0) >= 4:
+                mastered += 1
+        out.append({
+            **d,
+            "user_progress": {"due_today": due_today, "mastered": mastered, "total": len(card_ids)},
+        })
+    return {"items": out, "count": len(out)}
+
+
+@api_router.get("/flashcards/decks/{deck_id}/queue")
+async def flashcards_queue(deck_id: str, request: Request, limit: int = 20):
+    user = await require_user(request)
+    cards = await db.flashcards.find({"deck_id": deck_id}, {"_id": 0}).to_list(500)
+    if not cards:
+        return {"items": [], "count": 0}
+    card_ids = [c["card_id"] for c in cards]
+    prog = await db.user_flashcard_progress.find({"user_id": user["user_id"], "card_id": {"$in": card_ids}}, {"_id": 0}).to_list(500)
+    prog_by_id = {p["card_id"]: p for p in prog}
+    today = now_utc()
+    due = []
+    new_cards = []
+    for c in cards:
+        p = prog_by_id.get(c["card_id"])
+        if not p:
+            new_cards.append({**c, "progress": None})
+        else:
+            due_dt = p.get("due_date")
+            if due_dt and (due_dt.replace(tzinfo=timezone.utc) if due_dt.tzinfo is None else due_dt) <= today:
+                due.append({**c, "progress": p})
+    queue = (due + new_cards)[:min(limit, 100)]
+    return {"items": queue, "count": len(queue), "due_count": len(due), "new_count": len(new_cards)}
+
+
+def _sm2(prev: dict, grade: int) -> dict:
+    ease = float((prev or {}).get("ease_factor", 2.5))
+    repetitions = int((prev or {}).get("repetitions", 0))
+    interval_days = int((prev or {}).get("interval_days", 0))
+    if grade == 0:
+        repetitions = 0
+        interval_days = 0
+        # ease stays
+    else:
+        repetitions += 1
+        ease = max(1.3, ease + (0.1 - (3 - grade) * (0.08 + (3 - grade) * 0.02)))
+        if repetitions == 1:
+            interval_days = 1
+        elif repetitions == 2:
+            interval_days = 3 if grade == 1 else 6
+        else:
+            interval_days = round((interval_days or 1) * ease)
+    return {
+        "ease_factor": round(ease, 3),
+        "repetitions": repetitions,
+        "interval_days": interval_days,
+        "due_date": now_utc() + timedelta(days=interval_days),
+        "last_reviewed": now_utc(),
+        "last_grade": grade,
+    }
+
+
+@api_router.post("/flashcards/review")
+@limiter.limit("60/minute")
+async def flashcards_review(body: FlashcardReviewBody, request: Request):
+    user = await require_user(request)
+    card = await db.flashcards.find_one({"card_id": body.card_id}, {"_id": 0})
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+    prev = await db.user_flashcard_progress.find_one({"user_id": user["user_id"], "card_id": body.card_id}, {"_id": 0})
+    upd = _sm2(prev, body.grade)
+    total_reviews = int((prev or {}).get("total_reviews", 0)) + 1
+    doc = {"user_id": user["user_id"], "card_id": body.card_id, "total_reviews": total_reviews, **upd}
+    await db.user_flashcard_progress.update_one(
+        {"user_id": user["user_id"], "card_id": body.card_id}, {"$set": doc}, upsert=True,
+    )
+    # XP: +5 for good/easy, +2 for hard, 0 for again
+    xp = {0: 0, 1: 2, 2: 5, 3: 5}.get(body.grade, 0)
+    if xp:
+        await db.user_stats.update_one({"user_id": user["user_id"]}, {"$inc": {"total_xp": xp}}, upsert=True)
+    return {"progress": doc, "xp_awarded": xp}
+
+
+@api_router.get("/flashcards/stats")
+async def flashcards_stats(request: Request):
+    user = await require_user(request)
+    all_prog = await db.user_flashcard_progress.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(2000)
+    today = now_utc()
+    due_today = 0
+    mastered = 0
+    for p in all_prog:
+        due = p.get("due_date")
+        if due and (due.replace(tzinfo=timezone.utc) if due.tzinfo is None else due) <= today:
+            due_today += 1
+        if p.get("repetitions", 0) >= 4:
+            mastered += 1
+    # New cards (never reviewed): total system cards minus progress entries
+    total_cards = await db.flashcards.count_documents({})
+    studied_ids = {p["card_id"] for p in all_prog}
+    due_today += (total_cards - len(studied_ids))  # new cards count as due
+    return {
+        "total_cards_studied": len(all_prog),
+        "mastered_count": mastered,
+        "due_today": due_today,
+        "streak_days_studying_flashcards": 0,  # simplified
     }
 
 
@@ -2244,6 +2639,9 @@ async def _do_account_delete(request: Request, response: Response, body: Optiona
     await db.password_reset_tokens.delete_many({"user_id": uid})
     await db.user_syllabus_progress.delete_many({"user_id": uid})
     await db.user_dismissed_alerts.delete_many({"user_id": uid})
+    await db.mock_attempts.delete_many({"user_id": uid})
+    await db.mock_answers.delete_many({"user_id": uid})
+    await db.user_flashcard_progress.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
     response.delete_cookie("session_token", path="/", samesite="none", secure=True)
     log_event("account.delete", user_id=uid, ip=_client_ip(request))
@@ -2300,6 +2698,8 @@ async def client_errors(body: ClientErrorBody, request: Request):
 from seed_syllabus import SYLLABUS_V2 as SYLLABUS_SEED
 from seed_radar import REGULATORY_ALERTS
 from seed_content import CONTENT_POSTS
+from seed_mocks import ALL_QUESTIONS as MOCK_QUESTIONS_SEED, MOCK_TESTS
+from seed_flashcards import FLASHCARD_DECKS, FLASHCARDS
 
 DEMO_SUBJECTS = ["Advanced Accounts", "Business Law", "Taxation", "Costing", "Auditing", "Financial Management"]
 
@@ -2582,6 +2982,68 @@ async def run_seed():
         await db.content_posts.insert_many([{**p} for p in CONTENT_POSTS])
         logger.info(f"Seeded content posts ({len(CONTENT_POSTS)})")
 
+    # Phase 5 — Question bank + mock tests
+    if await db.question_bank.count_documents({}) == 0:
+        await db.question_bank.insert_many([{**q} for q in MOCK_QUESTIONS_SEED])
+        logger.info(f"Seeded question bank ({len(MOCK_QUESTIONS_SEED)})")
+    if await db.mock_tests.count_documents({}) == 0:
+        await db.mock_tests.insert_many([{**m, "created_at": now_utc()} for m in MOCK_TESTS])
+        logger.info(f"Seeded mock tests ({len(MOCK_TESTS)})")
+
+    # Phase 5 — Flashcards
+    if await db.flashcard_decks.count_documents({}) == 0:
+        await db.flashcard_decks.insert_many([{**d} for d in FLASHCARD_DECKS])
+        logger.info(f"Seeded flashcard decks ({len(FLASHCARD_DECKS)})")
+    if await db.flashcards.count_documents({}) == 0:
+        await db.flashcards.insert_many([{**c} for c in FLASHCARDS])
+        logger.info(f"Seeded flashcards ({len(FLASHCARDS)})")
+
+    # Demo mock attempts (3 seeded)
+    if demo and await db.mock_attempts.count_documents({"user_id": demo["user_id"], "status": "submitted"}) == 0:
+        demo_attempts = [
+            ("mock_i3_tax_speed", 22.0, 6.6, 30, 900, 68, ["GST"], ["Direct Tax"]),
+            ("mock_i5_audit", 42.0, 25.2, 60, 3200, 55, ["Ethics"], ["Nature of Audit"]),
+            ("mock_i4_costing", 46.0, 42.0, 60, 2900, 72, [], ["Marginal Costing", "Standard Costing"]),
+        ]
+        for mid, score, marks, total, tsec, pct, weak, strong in demo_attempts:
+            await db.mock_attempts.insert_one({
+                "attempt_id": f"att_seed_{uuid.uuid4().hex[:10]}",
+                "user_id": demo["user_id"], "mock_id": mid,
+                "paper_code": mid.split("_")[1].upper(),
+                "started_at": now_utc() - timedelta(days=random.randint(2, 20)),
+                "submitted_at": now_utc() - timedelta(days=random.randint(1, 20)),
+                "status": "submitted", "time_taken_seconds": tsec,
+                "score": score, "marks_obtained": marks, "total_marks": total,
+                "percentile_estimate": pct, "weak_topics": weak, "strong_topics": strong,
+            })
+        logger.info("Seeded demo mock attempts (3)")
+
+    # Demo flashcard progress on ~40 cards
+    if demo and await db.user_flashcard_progress.count_documents({"user_id": demo["user_id"]}) == 0:
+        all_cards = await db.flashcards.find({}, {"_id": 0, "card_id": 1}).to_list(300)
+        subset = all_cards[:40]
+        now = now_utc()
+        rows = []
+        for i, c in enumerate(subset):
+            if i < 12:  # due today
+                due_dt = now - timedelta(days=1)
+                reps, ease, interval = 2, 2.5, 1
+            elif i < 24:  # mastered
+                due_dt = now + timedelta(days=15)
+                reps, ease, interval = 5, 2.7, 15
+            else:  # future due
+                due_dt = now + timedelta(days=3)
+                reps, ease, interval = 3, 2.5, 3
+            rows.append({
+                "user_id": demo["user_id"], "card_id": c["card_id"],
+                "ease_factor": ease, "interval_days": interval, "repetitions": reps,
+                "due_date": due_dt, "last_reviewed": now - timedelta(days=random.randint(1, 5)),
+                "last_grade": 2, "total_reviews": reps + 1,
+            })
+        if rows:
+            await db.user_flashcard_progress.insert_many(rows)
+            logger.info(f"Seeded demo flashcard progress ({len(rows)})")
+
     # Demo user syllabus progress — 30% mastered on Accounting, 50% in progress on Laws
     if demo and await db.user_syllabus_progress.count_documents({"user_id": demo["user_id"]}) == 0:
         i1 = await db.syllabus.find_one({"paper_code": "I1"}, {"_id": 0})
@@ -2746,6 +3208,17 @@ async def startup():
         await db.regulatory_alerts.create_index("affected_levels")
         await db.content_posts.create_index("slug", unique=True)
         await db.content_posts.create_index([("published_at", -1)])
+        await db.question_bank.create_index("question_id", unique=True)
+        await db.question_bank.create_index("paper_code")
+        await db.mock_tests.create_index("mock_id", unique=True)
+        await db.mock_attempts.create_index("attempt_id", unique=True)
+        await db.mock_attempts.create_index([("user_id", 1), ("started_at", -1)])
+        await db.mock_answers.create_index([("attempt_id", 1), ("question_id", 1)], unique=True)
+        await db.flashcard_decks.create_index("deck_id", unique=True)
+        await db.flashcards.create_index("card_id", unique=True)
+        await db.flashcards.create_index("deck_id")
+        await db.user_flashcard_progress.create_index([("user_id", 1), ("card_id", 1)], unique=True)
+        await db.user_flashcard_progress.create_index([("user_id", 1), ("due_date", 1)])
     except Exception as e:
         logger.warning(f"Index setup: {e}")
     await run_seed()

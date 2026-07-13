@@ -77,7 +77,7 @@ function StatusControl({ status, onChange, testId }) {
   );
 }
 
-function PaperRow({ paper, expanded, onToggle, onStatusChange, filter }) {
+function PaperRow({ paper, expanded, onToggle, onStatusChange, filter, highlightChapterId }) {
   const chapters = (paper.chapters || []).filter((c) => {
     if (filter === "all") return true;
     if (filter === "not_started") return c.status === "not_started";
@@ -133,7 +133,13 @@ function PaperRow({ paper, expanded, onToggle, onStatusChange, filter }) {
                 </div>
               )}
               {chapters.map((c) => (
-                <ChapterRow key={c.chapter_id} paper={paper} chapter={c} onStatusChange={onStatusChange} />
+                <ChapterRow
+                  key={c.chapter_id}
+                  paper={paper}
+                  chapter={c}
+                  onStatusChange={onStatusChange}
+                  highlight={highlightChapterId === c.chapter_id}
+                />
               ))}
               <div className="mt-6 pt-4 border-t border-white/[0.06] flex flex-wrap gap-x-8 gap-y-2 font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#5A5A62]">
                 <span>MASTERED <span className="text-[#B4FF39]">{agg.chapters_mastered}</span></span>
@@ -149,13 +155,20 @@ function PaperRow({ paper, expanded, onToggle, onStatusChange, filter }) {
   );
 }
 
-function ChapterRow({ paper, chapter, onStatusChange }) {
+function ChapterRow({ paper, chapter, onStatusChange, highlight }) {
   const [pulse, setPulse] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
   const [notes, setNotes] = useState(chapter.notes || "");
+  const rowRef = React.useRef(null);
   const meta = STATUS_META[chapter.status] || STATUS_META.not_started;
   const Icon = meta.Icon;
   const highWeight = (chapter.weightage_pct || 0) >= 10;
+
+  useEffect(() => {
+    if (highlight && rowRef.current) {
+      rowRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [highlight]);
 
   const handleStatus = async (s) => {
     setPulse(true);
@@ -169,10 +182,18 @@ function ChapterRow({ paper, chapter, onStatusChange }) {
     setShowNotes(false);
   };
 
+  const glowStyle = highlight
+    ? { boxShadow: "0 0 0 1px #B4FF39, 0 0 24px rgba(180,255,57,0.4)", background: "rgba(180,255,57,0.05)" }
+    : pulse
+    ? { background: "rgba(180,255,57,0.06)" }
+    : {};
+
   return (
     <div
+      ref={rowRef}
       className="relative py-3 flex items-start gap-4 border-b border-white/[0.04] last:border-b-0"
-      style={{ background: pulse ? "rgba(180,255,57,0.06)" : "transparent", transition: "background 0.6s ease-out" }}
+      style={{ transition: "background 0.6s ease-out, box-shadow 0.6s ease-out", ...glowStyle }}
+      data-testid={`syllabus-chapter-row-${chapter.chapter_id}`}
     >
       <div className="w-10 flex-shrink-0 flex items-center justify-center pt-1">
         <Icon className="w-4 h-4" style={{ color: meta.color }} strokeWidth={1.5} />
@@ -252,6 +273,7 @@ export default function Syllabus() {
   const [expanded, setExpanded] = useState(params.get("paper") || null);
   const [filter, setFilter] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [highlightChapter, setHighlightChapter] = useState(params.get("chapter") || null);
 
   const level = user?.journey_level;
 
@@ -273,6 +295,23 @@ export default function Syllabus() {
       toast.error("Could not load paper");
     }
   };
+
+  // Deep-link: auto-load the paper and expand it when ?paper=… is in URL
+  useEffect(() => {
+    const p = params.get("paper");
+    if (p) {
+      setExpanded(p);
+      loadPaper(p);
+    }
+    // eslint-disable-next-line
+  }, [params]);
+
+  // Clear the highlight after 2.5s
+  useEffect(() => {
+    if (!highlightChapter) return;
+    const t = setTimeout(() => setHighlightChapter(null), 2500);
+    return () => clearTimeout(t);
+  }, [highlightChapter]);
 
   const onToggle = (code) => {
     if (expanded === code) {
@@ -380,6 +419,7 @@ export default function Syllabus() {
               onToggle={() => onToggle(p.paper_code)}
               onStatusChange={onStatusChange}
               filter={filter}
+              highlightChapterId={expanded === p.paper_code ? highlightChapter : null}
             />
           );
         })}

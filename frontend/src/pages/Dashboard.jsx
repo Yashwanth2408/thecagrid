@@ -445,12 +445,78 @@ function HubCard() {
   );
 }
 
+function MocksCard() {
+  const [history, setHistory] = useState([]);
+  useEffect(() => {
+    api.get("/mocks/attempts/history?limit=20").then((r) => setHistory(r.data.items || [])).catch(() => {});
+  }, []);
+  const best = history.length > 0 ? Math.max(...history.map((a) => a.score || 0)) : null;
+  return (
+    <Card className="col-span-12 lg:col-span-4 min-h-[200px] flex flex-col justify-between" testId="dashboard-mocks">
+      <div className="flex items-center justify-between">
+        <Eyebrow>[ mocks · {history.length} attempted ]</Eyebrow>
+        <Link to="/mocks" className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#8B5CF6] hover:text-[#F2F2F2]" data-testid="dashboard-mocks-open">
+          OPEN →
+        </Link>
+      </div>
+      {best !== null ? (
+        <>
+          <div>
+            <div className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62]">BEST SCORE</div>
+            <div className="font-display italic text-[52px] leading-[0.95] text-white">
+              {Math.round(best)}<span className="text-[20px] text-white/50">%</span>
+            </div>
+          </div>
+          <Link to="/mocks" className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#B4FF39] hover:text-white transition">
+            [ START ANOTHER → ]
+          </Link>
+        </>
+      ) : (
+        <>
+          <div className="font-display italic text-[24px] text-white/75 leading-tight">
+            Grade yourself before ICAI does.
+          </div>
+          <Link to="/mocks" className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#B4FF39] hover:text-white transition">
+            [ TAKE YOUR FIRST → ]
+          </Link>
+        </>
+      )}
+    </Card>
+  );
+}
+
+function FlashcardsCard() {
+  const [stats, setStats] = useState(null);
+  useEffect(() => {
+    api.get("/flashcards/stats").then((r) => setStats(r.data)).catch(() => {});
+  }, []);
+  const due = stats?.due_today ?? 0;
+  return (
+    <Card className="col-span-12 lg:col-span-4 min-h-[200px] flex flex-col justify-between" testId="dashboard-flashcards">
+      <div className="flex items-center justify-between">
+        <Eyebrow>[ flashcards · {due} due ]</Eyebrow>
+        <Link to="/flashcards" className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#8B5CF6] hover:text-[#F2F2F2]" data-testid="dashboard-flashcards-open">
+          OPEN →
+        </Link>
+      </div>
+      <div>
+        <div className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62]">DUE TODAY</div>
+        <div className="font-display italic text-[64px] leading-[0.95]" style={{ color: due > 0 ? "#B4FF39" : "#F2F2F2" }}>
+          {due}
+        </div>
+      </div>
+      <Link to="/flashcards" className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#B4FF39] hover:text-white transition">
+        {due > 0 ? "[ REVIEW NOW → ]" : "[ BROWSE DECKS → ]"}
+      </Link>
+    </Card>
+  );
+}
+
 function RecapCard() {
   const [rec, setRec] = useState(null);
   useEffect(() => {
     api.get("/recap/weekly").then((r) => setRec(r.data)).catch(() => {});
-  }, []);
-  if (!rec) {
+  }, []);  if (!rec) {
     return (
       <Card className="col-span-12 lg:col-span-4 min-h-[220px] flex flex-col justify-between" testId="dashboard-recap">
         <Eyebrow>[ weekly recap ]</Eyebrow>
@@ -560,6 +626,9 @@ export default function Dashboard() {
 
             <HubCard />
             <RecapCard />
+
+            <MocksCard />
+            <FlashcardsCard />
 
             <TopSubjectsCard subjects={data.top_subjects} />
             <NextUpCard />

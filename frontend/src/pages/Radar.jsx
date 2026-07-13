@@ -192,7 +192,7 @@ export default function Radar() {
                                 t.chapters.slice(0, 3).map((c) => (
                                   <Link
                                     key={c.chapter_id}
-                                    to={`/syllabus?paper=${t.paper_code}`}
+                                    to={`/syllabus?paper=${t.paper_code}&chapter=${c.chapter_id}`}
                                     className="px-2 py-1 font-mono uppercase tracking-[0.2em] text-[10px] border border-white/[0.1] hover:border-[#8B5CF6] text-white/70 hover:text-white transition"
                                   >
                                     {t.paper_code} · CH {String(c.number).padStart(2, "0")} · {c.name.slice(0, 20)}
