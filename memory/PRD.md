@@ -234,3 +234,32 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 - iteration_11: 15/17 pytest — 2 real bugs found (export missing new collections, tag filter AND with auto level).
 - iteration_12: 13/13 PASS. `retest_needed: false`.
 - Frontend was 100% in iter11 and unchanged in iter12.
+
+### Phase 6 — Articleship Toolkit + Community + Weak-topic Automation
+
+**Split from server.py (was 3.4k lines):**
+- `/app/backend/routes_articleship.py` (417 lines) — firms, reviews, articleship profile, leave records, practical logs, practical→syllabus correlations, firm-match
+- `/app/backend/routes_community.py` (399 lines) — categories, threads, replies, upvote/downvote, study groups, mocked CA verification
+- Included in `server.py` via `app.include_router(articleship_router)` / `community_router` + custom `Phase6RateLimitMiddleware` for 5-reviews/24h and 30-POSTs/min buckets.
+
+**New Mongo collections + indexes:**
+`firms`, `firm_reviews`, `articleship_profile` (unique on user_id), `leave_records`, `practical_logs`, `forum_categories`, `forum_threads`, `forum_replies`, `forum_votes` (unique {user_id, target_type, target_id}), `study_groups`, `study_group_members` (unique {group_slug, user_id}), `verification_requests`.
+
+**Endpoints:**
+- Firms: `GET /firms`, `GET /firms/{slug}`, `POST /firms/{slug}/reviews`
+- Articleship: `GET/PUT /articleship/me`, `GET/POST /articleship/leave`, `GET/POST /articleship/practical-log`, `GET /articleship/practical-to-syllabus`, `GET /articleship/firm-match`
+- Community: `GET /community/categories`, `GET /community/categories/{slug}/threads`, `POST /community/threads`, `GET /community/threads/{tid}`, `POST /community/threads/{tid}/replies`, `POST /community/vote`
+- Study groups: `GET/POST /community/study-groups`, `GET /community/study-groups/{slug}`, `POST /community/study-groups/{slug}/join|leave`
+- Mocked CA verify: `POST /verify/ca` — any 6-digit number → `is_verified_ca: true` + logs to `verification_requests`
+
+**Level segmentation:** level-kind categories require the user's `journey_level` to be at or above the category's `level_key` (order: Aspiring<Foundation<Intermediate<Articleship<Final<Qualified CA). Verified CAs bypass this.
+
+**Weak-topic → Flashcard auto-schedule:** `POST /mocks/attempts/{aid}/submit` now returns `auto_scheduled_flashcards`. On submit with weak topics, up to 15 flashcards from the same `paper_code` get pulled forward: new cards created as due-today, existing future-due cards moved to today, already-due cards tagged with `auto_scheduled_from_mock`. Mastered cards (`repetitions>=4`) never touched.
+
+**New frontend pages (11):** `/firms`, `/firms/:slug`, `/articleship`, `/articleship/log`, `/firm-match`, `/community`, `/community/:slug`, `/community/threads/:thread_id`, `/study-groups`, `/study-groups/:slug`. Dashboard has a Phase-6 bento shortcut row. Sidebar has Building2 (firms), Briefcase (articleship), MessagesSquare (community) icons.
+
+**Seeded (idempotent):** 41 firms, 62 hand-authored reviews, 9 forum categories (6 level + 3 cross), 14 threads with ~40 replies, 5 study groups (demo auto-joined to 2), demo articleship profile at Grant Thornton Bharat with 3 leave records + 5 practical logs.
+
+**Test iteration 13:** 43/44 backend PASS (1 by-design skip), 100% frontend. Overall success 97.7% backend / 100% frontend. RCA'd + fixed: I3 seed-exhaustion (already-due cards now counted in auto_scheduled). `is_verified_ca` resets on `/api/seed` for deterministic tests.
+
+**MOCKED (documented):** `/api/verify/ca` — production would call ICAI membership register API. Currently accepts any 6-digit numeric string.

@@ -1128,13 +1128,16 @@ async def mock_submit(attempt_id: str, request: Request):
                     if p is None:
                         bring_forward.append(("new", cid))
                     else:
-                        # skip if already due or already mastered
-                        due = p.get("due_date")
-                        if due and (due.replace(tzinfo=timezone.utc) if due.tzinfo is None else due) <= today:
-                            continue
+                        # skip mastered cards entirely
                         if int(p.get("repetitions", 0)) >= 4:
                             continue
-                        bring_forward.append(("existing", cid))
+                        due = p.get("due_date")
+                        due_norm = due.replace(tzinfo=timezone.utc) if (due and due.tzinfo is None) else due
+                        if due_norm and due_norm <= today:
+                            # already due — still tag as linked to this weak topic
+                            bring_forward.append(("already_due", cid))
+                        else:
+                            bring_forward.append(("existing", cid))
                 for kind, cid in bring_forward:
                     if kind == "new":
                         await db.user_flashcard_progress.update_one(
@@ -1147,10 +1150,15 @@ async def mock_submit(attempt_id: str, request: Request):
                             }},
                             upsert=True,
                         )
-                    else:
+                    elif kind == "existing":
                         await db.user_flashcard_progress.update_one(
                             {"user_id": user["user_id"], "card_id": cid},
                             {"$set": {"due_date": today, "auto_scheduled_from_mock": attempt_id}},
+                        )
+                    else:  # already_due — just tag as linked to this mock
+                        await db.user_flashcard_progress.update_one(
+                            {"user_id": user["user_id"], "card_id": cid},
+                            {"$set": {"auto_scheduled_from_mock": attempt_id}},
                         )
                     auto_scheduled += 1
     except Exception as e:

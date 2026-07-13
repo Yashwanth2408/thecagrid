@@ -376,7 +376,7 @@ async def firm_match(
     learning_min: Optional[float] = None,
 ):
     db, _, require_user, _ = get_deps(request)
-    # Anyone can query, but log the user for personalization
+    # Auth-gated so we can personalize/log usage
     _user = await require_user(request)
     all_firms = await db.firms.find({}, {"_id": 0}).to_list(500)
     wanted_areas = [a.strip().lower() for a in (practice_areas or "").split(",") if a.strip()]
