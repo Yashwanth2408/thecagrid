@@ -1,10 +1,13 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import AppShell from "@/components/AppShell";
 import GridBackground from "@/components/GridBackground";
 import { api } from "@/lib/apiClient";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
+
+const WS_BASE = (process.env.REACT_APP_BACKEND_URL || "http://localhost:8000")
+  .replace(/^http/, "ws");
 
 function fmt(seconds) {
   const s = Math.max(0, Math.round(seconds));
@@ -17,39 +20,136 @@ export default function RoomDetail() {
   const { user } = useAuth();
   const nav = useNavigate();
   const [state, setState] = useState(null);
+  const [messages, setMessages] = useState([]);
   const [message, setMessage] = useState("");
   const [now, setNow] = useState(Date.now());
   const [planned, setPlanned] = useState(25);
+  const [wsConnected, setWsConnected] = useState(false);
   const chatEnd = useRef(null);
+  const wsRef = useRef(null);
+  const pingInterval = useRef(null);
+  const pollInterval = useRef(null);
 
-  // heartbeat + fetch
-  useEffect(() => {
-    let stop = false;
-    const beat = async () => {
+  // ─── WebSocket connection ───────────────────────────────────────────────
+  const connectWS = useCallback(() => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
+
+    const sessionToken = document.cookie
+      .split("; ")
+      .find((r) => r.startsWith("session_token="))
+      ?.split("=")[1];
+
+    // Try Bearer token from localStorage as well
+    const token = sessionToken || localStorage.getItem("session_token") || "";
+    if (!token) return; // Will fall back to polling
+
+    const ws = new WebSocket(`${WS_BASE}/api/rooms/${code}/ws`);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      // Send auth token as first message
+      ws.send(JSON.stringify({ type: "auth", token }));
+      setWsConnected(true);
+      // Start WS keep-alive ping every 20s
+      pingInterval.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "ping" }));
+        }
+      }, 20000);
+    };
+
+    ws.onmessage = (ev) => {
+      let data;
+      try { data = JSON.parse(ev.data); } catch { return; }
+
+      if (data.type === "init") {
+        setState(data);
+        setMessages(data.messages || []);
+      } else if (data.type === "message") {
+        setMessages((prev) => [...prev, data.message]);
+      } else if (data.type === "presence") {
+        // Refetch room state on presence change (simple approach)
+        api.get(`/rooms/${code}`).then((r) => setState(r.data)).catch(() => {});
+      } else if (data.type === "timer") {
+        setState((prev) => prev ? { ...prev, room: { ...prev.room, active_timer_state: data.state } } : prev);
+      }
+    };
+
+    ws.onerror = () => {
+      setWsConnected(false);
+      fallbackToPoll();
+    };
+
+    ws.onclose = () => {
+      setWsConnected(false);
+      clearInterval(pingInterval.current);
+      // Reconnect after 3s if still on page
+      setTimeout(connectWS, 3000);
+    };
+  }, [code]);
+
+  // ─── Fallback polling (30s) ──────────────────────────────────────────────
+  const fallbackToPoll = useCallback(() => {
+    if (pollInterval.current) return; // Already polling
+    pollInterval.current = setInterval(async () => {
       try {
         const r = await api.post(`/rooms/${code}/ping`);
-        if (!stop) setState(r.data);
+        setState(r.data);
+        setMessages(r.data.messages || []);
       } catch (e) {
         if (e?.response?.status === 404) { toast.error("Room ended"); nav("/rooms"); }
       }
-    };
-    // join once, then ping
-    api.post(`/rooms/${code}/join`).then((r) => setState(r.data)).catch((e) => {
-      if (e?.response?.status !== 400) toast.error("Could not join room");
-    });
-    const iv = setInterval(beat, 30000);
-    return () => { stop = true; clearInterval(iv); api.post(`/rooms/${code}/leave`).catch(() => {}); };
+    }, 30000);
   }, [code, nav]);
 
-  // local ticker for countdown
+  useEffect(() => {
+    let alive = true;
+
+    // Join room via HTTP first (ensures we're in presence)
+    api.post(`/rooms/${code}/join`)
+      .then((r) => { if (alive) { setState(r.data); setMessages(r.data.messages || []); } })
+      .catch((e) => {
+        if (e?.response?.status !== 400) toast.error("Could not join room");
+      });
+
+    // Attempt WebSocket
+    connectWS();
+
+    // If WS fails within 2s, start polling
+    const wsTimeout = setTimeout(() => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        fallbackToPoll();
+      }
+    }, 2000);
+
+    return () => {
+      alive = false;
+      clearTimeout(wsTimeout);
+      clearInterval(pingInterval.current);
+      clearInterval(pollInterval.current);
+      pollInterval.current = null;
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      api.post(`/rooms/${code}/leave`).catch(() => {});
+    };
+  }, [code, nav, connectWS, fallbackToPoll]);
+
+  // Local ticker
   useEffect(() => {
     const iv = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(iv);
   }, []);
 
-  useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: "smooth" }); }, [state?.messages?.length]);
+  useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
 
-  if (!state) return <AppShell breadcrumb="APP / ROOMS"><div className="p-16 font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#5A5A62]">connecting…</div></AppShell>;
+  if (!state) return (
+    <AppShell breadcrumb="APP / ROOMS">
+      <div className="p-16 font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#5A5A62]">connecting…</div>
+    </AppShell>
+  );
+
   const room = state.room;
   const isHost = user?.user_id === room.host_user_id;
   const ts = room.active_timer_state;
@@ -74,11 +174,22 @@ export default function RoomDetail() {
       toast.success(`${r.data.participants} of you finished together. +${r.data.xp_awarded_each} XP.`);
     } catch { toast.error("Could not complete"); }
   };
+
+  // Send via WS if connected, else REST
   const send = async () => {
     const c = message.trim(); if (!c) return;
-    try { await api.post(`/rooms/${code}/message`, { content: c }); setMessage(""); }
-    catch (e) { toast.error(e?.response?.data?.detail || "Could not send"); }
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "message", content: c }));
+      setMessage("");
+    } else {
+      try {
+        const r = await api.post(`/rooms/${code}/message`, { content: c });
+        setMessages((prev) => [...prev, r.data]);
+        setMessage("");
+      } catch (e) { toast.error(e?.response?.data?.detail || "Could not send"); }
+    }
   };
+
   const leave = async () => { await api.post(`/rooms/${code}/leave`); nav("/rooms"); };
 
   return (
@@ -87,7 +198,17 @@ export default function RoomDetail() {
       <div className="relative max-w-[1400px] mx-auto px-6 lg:px-10 py-10" data-testid="room-detail-page">
         <div className="flex items-center justify-between mb-8">
           <div>
-            <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#B4FF39]" data-testid="room-code">ROOM · {code}</div>
+            <div className="flex items-center gap-3">
+              <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#B4FF39]" data-testid="room-code">ROOM · {code}</div>
+              {wsConnected ? (
+                <span className="flex items-center gap-1 font-mono uppercase tracking-[0.18em] text-[9px] text-[#B4FF39]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#B4FF39] animate-pulse inline-block" />
+                  LIVE WS
+                </span>
+              ) : (
+                <span className="font-mono uppercase tracking-[0.18em] text-[9px] text-[#5A5A62]">POLLING 30s</span>
+              )}
+            </div>
             <div className="font-display italic text-[26px] text-white leading-tight">{room.name}</div>
             <div className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62]">{room.subject_tag} · {(room.presence || []).length} IN THE ROOM</div>
           </div>
@@ -139,8 +260,8 @@ export default function RoomDetail() {
         {/* chat */}
         <div className="mt-8 border border-white/[0.06]" data-testid="room-chat">
           <div className="max-h-[260px] overflow-auto p-5">
-            {(state.messages || []).length === 0 && <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#5A5A62]">no messages yet.</div>}
-            {(state.messages || []).map((m) => (
+            {messages.length === 0 && <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#5A5A62]">no messages yet.</div>}
+            {messages.map((m) => (
               <div key={m.message_id} className="mb-2 flex items-start gap-3">
                 <div className="w-6 h-6 rounded-full bg-gradient-to-br from-[#8B5CF6] to-[#4C1D95] flex items-center justify-center text-[9px] font-bold shrink-0">{m.initials}</div>
                 <div className="flex-1">

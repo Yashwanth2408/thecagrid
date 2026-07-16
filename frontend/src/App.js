@@ -83,7 +83,7 @@ function DefaultSEO() {
       <title>The CA Grid · Your CA journey, finally in one place.</title>
       <meta
         name="description"
-        content="A premium dark-mode-first productivity platform for Indian Chartered Accountancy aspirants. Focus timer, streaks, AI mentor powered by Claude Sonnet 4.5, and analytics — built for the 2026 cohort."
+        content="A premium dark-mode-first productivity platform for Indian Chartered Accountancy aspirants. Focus timer, streaks, AI mentor powered by Groq, and analytics — built for the 2026 cohort."
       />
       <meta name="robots" content="index,follow" />
       {/* Open Graph */}

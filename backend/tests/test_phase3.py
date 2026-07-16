@@ -24,22 +24,37 @@ API = f"{BASE_URL}/api"
 
 # ---------- Fixtures ----------
 @pytest.fixture(scope="module")
-def demo_session():
-    s = requests.Session()
-    r = s.post(f"{API}/auth/login",
-               json={"email": "demo@cagrid.in", "password": "demo123"},
-               timeout=15)
-    assert r.status_code == 200, f"demo login failed: {r.text}"
+def demo_session(seed_once):
+    class AuthedSession(requests.Session):
+        def login(self):
+            r = super().post(
+                f"{API}/auth/login",
+                json={"email": "demo@cagrid.in", "password": "demo123"},
+                timeout=15,
+            )
+            assert r.status_code == 200, f"demo login failed: {r.text}"
+            token = r.json()["session_token"]
+            self.headers.update({"Authorization": f"Bearer {token}"})
+            return token
+
+        def request(self, method, url, **kwargs):
+            retried = kwargs.pop("_retried", False)
+            response = super().request(method, url, **kwargs)
+            if response.status_code == 401 and not retried and url.startswith(API):
+                self.login()
+                kwargs["_retried"] = True
+                response.close()
+                return self.request(method, url, **kwargs)
+            return response
+
+    s = AuthedSession()
+    s._auth_token = s.login()
     return s
 
 
 @pytest.fixture(scope="module")
-def demo_token():
-    r = requests.post(f"{API}/auth/login",
-                      json={"email": "demo@cagrid.in", "password": "demo123"},
-                      timeout=15)
-    assert r.status_code == 200
-    return r.json()["session_token"]
+def demo_token(demo_session):
+    return demo_session._auth_token
 
 
 # ---------- OpenAPI ----------
@@ -291,10 +306,15 @@ class TestStudyPlan:
             timeout=120,
         )
         assert r.status_code == 200, r.text
-        plan = r.json()
-        assert plan["exam_date"] == exam_date
-        assert plan["status"] == "active"
-        assert "weeks" in plan["plan_json"]
+        resp = r.json()
+        # The endpoint now returns {job_id, status, plan: {...}} inline (no polling needed locally)
+        assert resp.get("status") in ("done", "pending"), f"unexpected status: {resp}"
+        # Extract plan — may be top-level (old shape) or nested under 'plan' key (new shape)
+        plan = resp.get("plan") or resp
+        assert plan is not None, f"plan missing in response: {resp}"
+        assert plan.get("exam_date") == exam_date, f"exam_date mismatch: {plan}"
+        assert plan.get("status") == "active", f"plan status should be active: {plan}"
+        assert "weeks" in plan.get("plan_json", {}), f"plan_json.weeks missing: {plan}"
         new_plan_id = plan["plan_id"]
 
         # Active plan should now be the new one

@@ -240,7 +240,7 @@ export default function MentorChat({
             ))}
           </div>
           <div className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62]">
-            claude sonnet 4.5
+            groq runtime
           </div>
         </div>
       )}

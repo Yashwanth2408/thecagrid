@@ -1,7 +1,7 @@
 # The CA Grid — PRD (Product Requirements Document)
 
 ## Original Problem Statement (Phase 1 — verbatim summary)
-Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA aspirants. Phase 1 delivers: Landing page, Auth (Emergent Google OAuth + Email/Password), Onboarding wizard with a mini "Am I CA material?" quiz for Aspiring users, Dashboard skeleton, ProtectedRoute pattern with the 3-state auth check, and seed data (demo user + syllabus).
+Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA aspirants. Phase 1 delivers: Landing page, Auth (Google OAuth + Email/Password), Onboarding wizard with a mini "Am I CA material?" quiz for Aspiring users, Dashboard skeleton, ProtectedRoute pattern with the 3-state auth check, and seed data (demo user + syllabus).
 
 ## Stack
 - Frontend: React (CRA + craco), TailwindCSS, Framer Motion, Lucide, shadcn/ui, canvas-confetti, react-router-dom v7
@@ -23,7 +23,7 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 
 ## Core requirements (static)
 - Landing page (public), Login (public), Signup (public)
-- Auth via Emergent Google OAuth **and** email/password (bcrypt)
+- Auth via Google OAuth **and** email/password (bcrypt)
 - httpOnly `session_token` cookie (samesite=none, secure, 7-day) AND Bearer support
 - Onboarding wizard: welcome → level → (quiz if Aspiring) → goal + subjects → confetti → dashboard
 - Dashboard shell: top nav (streak flame placeholder, avatar dropdown w/ logout), sidebar (icon-only), welcome bento + Phase 2 placeholder
@@ -33,7 +33,7 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 ## What's been implemented — Phase 1 (2026-07-09)
 - ✅ Landing page (`/`) — hero with animated bento mock, feature bento (6 cards), testimonials, footer, all CTAs to `/signup`
 - ✅ `/signup` and `/login` — glassmorphic, violet-glow, email/password + Google OAuth button
-- ✅ Emergent Google OAuth: dynamic redirect via `window.location.origin`, backend calls `demobackend.emergentagent.com/.../session-data`, sets httpOnly cookie
+- ✅ Google OAuth: dynamic redirect via `window.location.origin`, backend uses a configured session exchange endpoint, sets httpOnly cookie
 - ✅ Email/password: `POST /api/auth/signup`, `POST /api/auth/login` with bcrypt, session cookie
 - ✅ `/api/auth/me`, `/api/auth/logout` — cookie + Bearer both accepted
 - ✅ Onboarding wizard (`/onboarding`): 5 steps, quiz for Aspiring only with deterministic weighted scoring (0-100 with 3 bands + tailored 3-bullet roadmap), confetti on finish
@@ -54,7 +54,7 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 - Syllabus Tracker per paper with chapter-level progress + progress rings
 
 ### P1
-- AI Mentor (Emergent LLM key — Claude Sonnet 4.5 / GPT-5.2) with ICAI-cited answers
+- AI Mentor (Groq-backed LLM) with ICAI-cited answers
 - Regulatory Radar — ICAI announcement/amendment feed
 - Analytics page (Recharts) — hours/subject/week
 - Profile page — edit level/goal/subjects
@@ -120,7 +120,7 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 ## Phase 3 — AI CA Mentor + Micro-Toast (2026-07-09)
 
 ### Backend
-- `emergentintegrations` LlmChat streaming with **claude-sonnet-4-5-20250929**, per-session instances, SSE responses
+- OpenAI-compatible LLM streaming via Groq, per-session instances, SSE responses
 - New collections: `mentor_sessions`, `mentor_messages`, `study_plans`
 - New endpoints: `POST /mentor/sessions`, `GET /mentor/sessions[/id]`, `DELETE /mentor/sessions/id`, `POST /mentor/chat` (SSE), `POST /mentor/quick` (SSE, 10/min in-memory rate limit), `POST /study-plan/generate` (structured JSON via LLM), `GET /study-plan/active`, `POST /study-plan/{id}/archive`
 - System prompts locked in `/app/backend/prompts.py` (Exam + Practice + Study Plan JSON schema)
@@ -139,7 +139,7 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 ### Test results
 - Backend: **49/49** pytest (30 Phase 1+2 regression + 19 Phase 3 new)
 - Frontend: **all** Phase 3 review scenarios pass
-- Real Claude streaming verified end-to-end; rate limit + SSE headers + citation parsing all green
+- Real streaming verified end-to-end; rate limit + SSE headers + citation parsing all green
 
 ### Deferred (all OPTIONAL per iteration 4 testing agent)
 - Split `server.py` (now 1663 lines) into `auth/focus/mentor/study_plan/seed/pulse/stats` modules
@@ -156,7 +156,7 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 ### Backend
 - `slowapi` rate limiting: auth 5/min per IP, mentor/chat 20/min/user, mentor/quick 10/min/user, study-plan 5/hour, focus 30/min/user, client-errors 10/min/IP, live/pulse 60/min/IP, default 100/min/user. 429 JSON returned.
 - `SecurityHeadersMiddleware`: HSTS, XFO=DENY, nosniff, Referrer-Policy, Permissions-Policy, COOP, CSP (with documented unsafe-* relaxations for CRA/Framer/PostHog).
-- CORS locked to `*.preview.emergentagent.com` + `*.internal.preview.emergentagent.com` + `localhost` + backend URL host; `.*` regex removed.
+- CORS locked to the deployment preview hosts + `localhost` + backend URL host; `.*` regex removed.
 - Password strength: ≥8, letter+digit, block-listed against `common_passwords.py`.
 - Password reset endpoints (stdout-only link): `/api/auth/password-reset/{request,confirm}` with URL-safe 32-byte token, 60-min TTL, single-use, generic response, session rotation on confirm.
 - Session rotation on login/signup (delete_many prior sessions).
@@ -169,7 +169,7 @@ Build "The CA Grid" — a premium, dark-mode-first web platform for Indian CA as
 ### Frontend
 - `<ErrorBoundary>` wraps App → reports to `/api/client-errors`.
 - Custom `/NotFound` (404) and `/ServerError` (500) editorial pages.
-- `/terms` and `/privacy` — 10 numbered sections, mono metadata line, vendor table listing Emergent Auth, Anthropic Claude, MongoDB, Pixabay CDN, PostHog, Google Fonts.
+- `/terms` and `/privacy` — 10 numbered sections, mono metadata line, vendor table listing Google OAuth, Groq, MongoDB, Pixabay CDN, PostHog, Google Fonts.
 - `/forgot-password` + `/reset-password` — brand-matched auth pages with `sonner` toasts.
 - Profile page → Account section with **Export JSON** and **Delete account** cards (confirm-DELETE input).
 - Global SEO via `react-helmet-async` — meta, OG, Twitter, robots/sitemap, favicon.svg, apple-touch-icon, manifest.json.

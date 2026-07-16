@@ -12,7 +12,7 @@ subsequent phases.
 
 | Control | State |
 | --- | --- |
-| HTTPS everywhere (via Emergent ingress) | ✅ |
+| HTTPS everywhere (via deployment ingress) | ✅ |
 | httpOnly + secure + samesite=none cookie for `session_token` | ✅ |
 | 7-day session TTL, MongoDB TTL index on `expires_at` | ✅ |
 | **Session rotation on login/signup** — all prior sessions for the same user are invalidated when a new session is created | ✅ Phase 3.5 |
@@ -42,7 +42,7 @@ address. When a limit is exceeded the server returns `HTTP 429` with a JSON body
 Locked to an explicit regex allowlist (previous config was `.*`).
 
 ```
-allow_origin_regex = ^(https://[a-z0-9-]+\.preview\.emergentagent\.com|http://localhost(:\d+)?|<REACT_APP_BACKEND_URL host>)$
+allow_origin_regex = ^(https://<your-deployment-host>|http://localhost(:\d+)?|<REACT_APP_BACKEND_URL host>)$
 allow_credentials  = True
 allow_methods      = ["GET","POST","PUT","DELETE","OPTIONS","PATCH"]
 allow_headers      = ["*"]
@@ -66,7 +66,7 @@ Every response gets:
 
 ```
 default-src 'self';
-script-src   'self' 'unsafe-inline' 'unsafe-eval' https://assets.emergent.sh https://*.i.posthog.com https://us.i.posthog.com;
+script-src   'self' 'unsafe-inline' 'unsafe-eval' https://*.i.posthog.com https://us.i.posthog.com;
 style-src    'self' 'unsafe-inline' https://fonts.googleapis.com;
 img-src      'self' data: blob: https:;
 font-src     'self' https://fonts.gstatic.com data:;
@@ -84,7 +84,7 @@ object-src   'none';
   inject inline `style="..."` attributes for animation and layout. Removing this today
   breaks page transitions, drawers, sliders, and charts.
 - **`unsafe-inline` on script** — Create React App bundles inline the runtime chunk in
-  development (`react-scripts start`), and the PostHog + Emergent Auth snippets in
+  development (`react-scripts start`), and the PostHog auth snippets in
   `index.html` require it in production.
 - **`unsafe-eval` on script** — required by React DevTools helpers and Recharts’
   runtime evaluations in some code paths. Framer Motion uses `new Function()` in
@@ -98,7 +98,7 @@ object-src   'none';
 2. Replace inline styles from third parties with `style-src 'self' 'nonce-…'` +
    `hashed` fallback for the very few Tailwind-injected inline styles (audit with
    [csp-evaluator](https://csp-evaluator.withgoogle.com/)).
-3. Move PostHog and Emergent Auth to `preconnect` + external `<script src>` only.
+3. Move PostHog and auth snippets to `preconnect` + external `<script src>` only.
 4. Remove `'unsafe-eval'` after auditing Recharts / Framer Motion for `eval` /
    `new Function` usage — swap for AOT-compiled equivalents.
 5. Introduce a **CSP report-only** phase (`Content-Security-Policy-Report-Only`) with

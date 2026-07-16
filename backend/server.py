@@ -1,6 +1,6 @@
 """
 The CA Grid — FastAPI backend
-Phase 1: Auth (Emergent + email/password) + onboarding
+Phase 1: Auth (Google OAuth + email/password) + onboarding
 Phase 2: Focus sessions + XP/level + streaks + badges + analytics
 """
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Header
@@ -9,6 +9,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import sys
 import logging
 import uuid
 import secrets
@@ -24,19 +25,52 @@ import bcrypt
 import pytz
 import re
 import json as _json
+import socket
+from urllib.parse import urlparse
 from collections import defaultdict, deque
 from fastapi.responses import StreamingResponse, JSONResponse
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
-from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
-from prompts import build_exam_prompt, build_practice_prompt, build_study_plan_prompt
-from common_passwords import is_common_password
+from openai import AsyncOpenAI
+try:
+    from mongomock_motor import AsyncMongoMockClient
+except Exception:
+    AsyncMongoMockClient = None
+try:
+    from backend.prompts import build_exam_prompt, build_practice_prompt, build_study_plan_prompt
+    from backend.common_passwords import is_common_password
+except ImportError:
+    from prompts import build_exam_prompt, build_practice_prompt, build_study_plan_prompt
+    from common_passwords import is_common_password
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
+
+def _use_mock_mongo(url: str) -> bool:
+    if os.environ.get("USE_MOCK_MONGO", "").lower() == "true":
+        return True
+    if AsyncMongoMockClient is None:
+        return False
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme != "mongodb" or parsed.hostname not in {"localhost", "127.0.0.1"}:
+            return False
+        port = parsed.port or 27017
+        with socket.create_connection((parsed.hostname, port), timeout=0.2):
+            return False
+    except Exception:
+        return True
+    return False
+
+if _use_mock_mongo(mongo_url):
+    logging.getLogger(__name__).warning("MongoDB unavailable locally; using mongomock_motor fallback")
+    client = AsyncMongoMockClient()
+else:
+    client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=3000, connectTimeoutMS=3000)
 db = client[os.environ['DB_NAME']]
 
 app = FastAPI(
@@ -52,10 +86,14 @@ logger = logging.getLogger(__name__)
 
 # ---------- Constants ----------
 SESSION_TTL_DAYS = 7
-EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 IST = pytz.timezone("Asia/Kolkata")
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
-MENTOR_MODEL = ("anthropic", "claude-sonnet-4-5-20250929")
+GOOGLE_OAUTH_ENABLED = os.environ.get("GOOGLE_OAUTH_ENABLED", "false").lower() == "true"
+GOOGLE_OAUTH_SESSION_URL = os.environ.get("GOOGLE_OAUTH_SESSION_URL", "")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_BASE_URL = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "false").lower() == "true"
+SESSION_COOKIE_SAMESITE = os.environ.get("SESSION_COOKIE_SAMESITE", "lax")
 
 # ---------- Structured JSON logging ----------
 def log_event(event: str, **fields):
@@ -218,7 +256,7 @@ def set_session_cookie(response: Response, session_token: str):
     response.set_cookie(
         key="session_token", value=session_token,
         max_age=max_age, expires=max_age, path="/",
-        httponly=True, secure=True, samesite="none",
+        httponly=True, secure=SESSION_COOKIE_SECURE, samesite=SESSION_COOKIE_SAMESITE,
     )
 
 async def create_session_for_user(user_id: str) -> str:
@@ -353,10 +391,12 @@ def _client_ip(request: Request) -> str:
 
 @api_router.post("/auth/google/session")
 async def auth_google_session(request: Request, response: Response, x_session_id: Optional[str] = Header(None, alias="X-Session-ID")):
+    if not GOOGLE_OAUTH_ENABLED or not GOOGLE_OAUTH_SESSION_URL:
+        raise HTTPException(status_code=501, detail="Google OAuth is not configured for this environment")
     if not x_session_id:
         raise HTTPException(status_code=400, detail="Missing X-Session-ID header")
     async with httpx.AsyncClient(timeout=15.0) as hc:
-        r = await hc.get(EMERGENT_SESSION_URL, headers={"X-Session-ID": x_session_id})
+        r = await hc.get(GOOGLE_OAUTH_SESSION_URL, headers={"X-Session-ID": x_session_id})
     if r.status_code != 200:
         raise HTTPException(status_code=401, detail="Invalid session_id")
     data = r.json()
@@ -365,7 +405,7 @@ async def auth_google_session(request: Request, response: Response, x_session_id
     picture = data.get("picture")
     session_token = data.get("session_token") or secrets.token_urlsafe(48)
     if not email:
-        raise HTTPException(status_code=400, detail="Emergent did not return email")
+        raise HTTPException(status_code=400, detail="OAuth provider did not return email")
     existing = await db.users.find_one({"email": email}, {"_id": 0})
     if existing:
         user_id = existing["user_id"]
@@ -411,7 +451,7 @@ async def auth_logout(request: Request, response: Response):
         sess = await db.user_sessions.find_one({"session_token": token}, {"_id": 0, "user_id": 1})
         uid = sess.get("user_id") if sess else None
         await db.user_sessions.delete_one({"session_token": token})
-    response.delete_cookie("session_token", path="/", samesite="none", secure=True)
+    response.delete_cookie("session_token", path="/", samesite=SESSION_COOKIE_SAMESITE, secure=SESSION_COOKIE_SECURE)
     log_event("auth.logout", user_id=uid, ip=_client_ip(request))
     return {"ok": True}
 
@@ -2115,6 +2155,8 @@ def _parse_compact(line: str):
     if m:
         return {"act": m.group("act").strip(), "section": m.group("sec").strip(),
                 "note": (m.group("note") or "").strip() or None}
+    # 3) Multi-line blank-separated: Act/Standard: <val>\n\nSection/Para: <val>\n\nNote: <val>
+    # This is handled in parse_citations pre-processing
     return None
 
 
@@ -2342,6 +2384,60 @@ async def _sse_wrap(gen):
         yield f"data: {_json.dumps(ev)}\n\n".encode("utf-8")
 
 
+async def _stream_ai_text(system_prompt: str, user_prompt: str, max_tokens: int = 4096):
+    """Stream assistant text through Groq (llama-3.3-70b-versatile) with CA-domain tuned params."""
+    if not GROQ_API_KEY:
+        fallback = (
+            "AI mentor is running in local fallback mode because GROQ_API_KEY is not set. "
+            "Configure GROQ_API_KEY and GROQ_MODEL in backend/.env to enable live AI responses. "
+            "For now: break the task into a 25-minute block, revise one ICAI source topic, then test recall without notes."
+        )
+        for word in fallback.split(" "):
+            yield word + " "
+            await asyncio.sleep(0)
+        return
+
+    client_ai = AsyncOpenAI(api_key=GROQ_API_KEY, base_url=GROQ_BASE_URL)
+    stream = await client_ai.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.1,   # Low temp = precise statutory references; CA exam = no hallucination
+        top_p=0.95,         # High coverage for technical terminology
+        max_tokens=max_tokens,
+        stream=True,
+    )
+    async for chunk in stream:
+        delta = chunk.choices[0].delta.content if chunk.choices else None
+        if delta:
+            yield delta
+
+
+def _fallback_study_plan(exam_date: str, days_until: int, daily_hours: float, weak_areas: List[str]) -> dict:
+    weak = weak_areas or ["Law", "Accounting", "Taxation"]
+    weekly_hours = round(float(daily_hours) * 6, 1)
+    return {
+        "summary": f"{days_until}-day CA study plan generated locally. Add GROQ_API_KEY for AI-personalized planning.",
+        "exam_date": exam_date,
+        "daily_hours": daily_hours,
+        "weekly_structure": [
+            {"day": "Mon-Sat", "focus": "Concept study, active recall, and one timed practice block", "hours": daily_hours},
+            {"day": "Sun", "focus": "Weekly mock review, backlog cleanup, and next-week planning", "hours": max(1, round(daily_hours * 0.6, 1))},
+        ],
+        "weak_area_plan": [
+            {"topic": topic, "cadence": "3 focused blocks/week", "method": "ICAI material -> handwritten summary -> timed questions -> error log"}
+            for topic in weak[:6]
+        ],
+        "milestones": [
+            {"window": "Week 1", "target": f"Stabilize basics and complete {weekly_hours} focused hours"},
+            {"window": "Middle weeks", "target": "Alternate revision with cumulative mocks; update weak-topic flashcards"},
+            {"window": "Final 10 days", "target": "Only mocks, RTP/MTP review, formula/legal section recall, and sleep discipline"},
+        ],
+    }
+
+
 async def _mentor_stream_and_save(user_id: str, session_id: Optional[str], message: str, mode: str):
     """Common streamer used by /mentor/chat and /mentor/quick."""
     ctx = await build_user_ctx(user_id)
@@ -2361,22 +2457,12 @@ async def _mentor_stream_and_save(user_id: str, session_id: Optional[str], messa
             new_title = message.strip()[:48]
             await db.mentor_sessions.update_one({"session_id": session_id}, {"$set": {"title": new_title}})
 
-    # Fresh LlmChat per session
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=session_id or f"quick_{uuid.uuid4().hex[:10]}",
-        system_message=system_prompt,
-    ).with_model(*MENTOR_MODEL)
-
     yield {"type": "start"}
     full = []
     try:
-        async for ev in chat.stream_message(UserMessage(text=message)):
-            if isinstance(ev, TextDelta):
-                full.append(ev.content)
-                yield {"type": "delta", "content": ev.content}
-            elif isinstance(ev, StreamDone):
-                break
+        async for delta in _stream_ai_text(system_prompt, message):
+            full.append(delta)
+            yield {"type": "delta", "content": delta}
     except Exception as e:
         logger.exception("mentor stream error")
         yield {"type": "error", "error": str(e)}
@@ -2429,109 +2515,14 @@ async def mentor_quick(body: MentorQuickBody, request: Request):
     )
 
 
-async def _study_plan_stream(user_id: str, exam_date: str, daily_hours: float, weak_areas: List[str]):
-    """SSE generator: start → progress heartbeats every ~5s → done with the persisted plan → error on failure."""
-    try:
-        try:
-            exam_dt = datetime.strptime(exam_date, "%Y-%m-%d").date()
-        except ValueError:
-            yield {"type": "error", "error": "exam_date must be YYYY-MM-DD"}
-            return
-        days_until = max(1, (exam_dt - now_ist().date()).days)
-
-        yield {"type": "start"}
-        yield {"type": "progress", "message": "drafting the strategy…"}
-
-        ctx = await build_user_ctx(user_id)
-        prompt = build_study_plan_prompt(ctx, exam_date, days_until, daily_hours, weak_areas)
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"plan_{uuid.uuid4().hex[:10]}",
-            system_message="You produce concise, valid JSON study plans. Output ONLY JSON, no prose.",
-        ).with_model(*MENTOR_MODEL)
-
-        chunks: list = []
-        stream_done = asyncio.Event()
-
-        async def _run_llm():
-            try:
-                async for ev in chat.stream_message(UserMessage(text=prompt)):
-                    if isinstance(ev, TextDelta):
-                        chunks.append(ev.content)
-                    elif isinstance(ev, StreamDone):
-                        break
-            finally:
-                stream_done.set()
-
-        llm_task = asyncio.create_task(_run_llm())
-        step = 0
-        heartbeats = [
-            "sketching week structure…",
-            "allocating hours to weak areas…",
-            "spacing revision blocks…",
-            "reserving mock tests…",
-            "finalising day-by-day tasks…",
-        ]
-        while not stream_done.is_set():
-            try:
-                await asyncio.wait_for(stream_done.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                msg = heartbeats[min(step, len(heartbeats) - 1)]
-                step += 1
-                yield {"type": "progress", "message": msg}
-
-        try:
-            await llm_task
-        except Exception as e:
-            yield {"type": "error", "error": f"LLM failed: {e}"}
-            return
-
-        text = "".join(chunks).strip()
-        # Strip ```json fences and any preamble; find first {...} block as fallback
-        if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?\s*", "", text)
-            text = re.sub(r"\s*```$", "", text)
-        try:
-            plan_json = _json.loads(text)
-        except Exception:
-            m = re.search(r"\{[\s\S]*\}", text)
-            if m:
-                try:
-                    plan_json = _json.loads(m.group(0))
-                except Exception as e:
-                    yield {"type": "error", "error": f"LLM returned non-JSON: {e}"}
-                    return
-            else:
-                yield {"type": "error", "error": "LLM returned non-JSON"}
-                return
-
-        plan_id = f"plan_{uuid.uuid4().hex[:14]}"
-        await db.study_plans.update_many(
-            {"user_id": user_id, "status": "active"},
-            {"$set": {"status": "archived"}},
-        )
-        doc = {
-            "plan_id": plan_id, "user_id": user_id,
-            "exam_date": exam_date, "daily_hours": daily_hours,
-            "weak_areas": weak_areas, "plan_json": plan_json,
-            "created_at": now_utc(), "status": "active",
-        }
-        await db.study_plans.insert_one(doc)
-        # Exclude Mongo's _id (ObjectId, not JSON-serializable) and normalize datetime
-        plan_out = {k: v for k, v in doc.items() if k != "_id"}
-        plan_out["created_at"] = doc["created_at"].isoformat()
-        yield {"type": "done", "plan": plan_out}
-    except Exception as e:
-        logger.exception("study plan stream error")
-        yield {"type": "error", "error": str(e)}
+# NOTE: _study_plan_stream was removed — superseded by the job-queue pattern (_run_plan_job).
 
 
 @api_router.post("/study-plan/generate")
 @limiter.limit("5/hour")
 async def study_plan_generate(body: StudyPlanBody, request: Request):
-    """Kick off a study-plan generation job. Returns immediately with {job_id}.
-    Client polls GET /study-plan/status/{job_id} every ~2s until status=done|error.
-    Avoids k8s ingress ~60s timeout on long streaming responses.
+    """Kick off a study-plan generation job and return job ID for polling.
+    The job runs in a background task; poll /study-plan/status/{job_id} for result.
     """
     user = await require_user(request)
     _cleanup_plan_jobs()
@@ -2541,8 +2532,9 @@ async def study_plan_generate(body: StudyPlanBody, request: Request):
         "status": "pending", "progress": "queued",
         "created_at": now_utc(),
     }
+    # Start background task
     asyncio.create_task(_run_plan_job(job_id, user["user_id"], body.exam_date, body.daily_hours, body.weak_areas))
-    return {"job_id": job_id, "status": "pending"}
+    return {"job_id": job_id, "status": "pending", "progress": "queued"}
 
 
 @api_router.get("/study-plan/status/{job_id}")
@@ -2583,21 +2575,34 @@ async def _run_plan_job(job_id: str, user_id: str, exam_date: str, daily_hours: 
         ctx = await build_user_ctx(user_id)
         _PLAN_JOBS[job_id] = {**_PLAN_JOBS[job_id], "progress": "drafting the strategy…"}
 
-        prompt = build_study_plan_prompt(ctx, exam_date, days_until, daily_hours, weak_areas)
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"plan_{uuid.uuid4().hex[:10]}",
-            system_message="You produce concise, valid JSON study plans. Output ONLY JSON, no prose.",
-        ).with_model(*MENTOR_MODEL)
+        if not GROQ_API_KEY:
+            plan_json = _fallback_study_plan(exam_date, days_until, daily_hours, weak_areas)
+            plan_id = f"plan_{uuid.uuid4().hex[:14]}"
+            await db.study_plans.update_many(
+                {"user_id": user_id, "status": "active"},
+                {"$set": {"status": "archived"}},
+            )
+            doc = {
+                "plan_id": plan_id, "user_id": user_id,
+                "exam_date": exam_date, "daily_hours": daily_hours,
+                "weak_areas": weak_areas, "plan_json": plan_json,
+                "created_at": now_utc(), "status": "active",
+            }
+            await db.study_plans.insert_one(doc)
+            plan_out = {k: v for k, v in doc.items() if k != "_id"}
+            plan_out["created_at"] = plan_out["created_at"].isoformat()
+            _PLAN_JOBS[job_id] = {**_PLAN_JOBS[job_id], "status": "done", "plan": plan_out, "progress": "done"}
+            return
 
+        prompt = build_study_plan_prompt(ctx, exam_date, days_until, daily_hours, weak_areas)
         chunks: list = []
-        async for ev in chat.stream_message(UserMessage(text=prompt)):
-            if isinstance(ev, TextDelta):
-                chunks.append(ev.content)
-                if len(chunks) % 20 == 0:
+        async for delta in _stream_ai_text(
+            "You produce concise, valid JSON study plans. Output ONLY JSON, no prose.",
+            prompt,
+        ):
+            chunks.append(delta)
+            if len(chunks) % 20 == 0:
                     _PLAN_JOBS[job_id] = {**_PLAN_JOBS[job_id], "progress": f"generating… ({sum(len(c) for c in chunks)} chars)"}
-            elif isinstance(ev, StreamDone):
-                break
 
         text = "".join(chunks).strip()
         if text.startswith("```"):
@@ -3613,19 +3618,21 @@ async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
 app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 
 # --- CORS: locked allowlist ---
-_frontend_url = os.environ.get("REACT_APP_BACKEND_URL", "") or ""
+_frontend_url = os.environ.get("FRONTEND_URL", "") or ""
 _frontend_host = ""
 if _frontend_url:
     m = re.match(r"^(https?://[^/]+)", _frontend_url)
     _frontend_host = re.escape(m.group(1)) if m else ""
+if not _frontend_host and os.environ.get("ENVIRONMENT") == "production":
+    raise RuntimeError("FRONTEND_URL must be set in production")
 _origin_regex_parts = [
-    r"https://[a-z0-9-]+\.preview\.emergentagent\.com",
-    r"https://[a-z0-9-]+\.internal\.preview\.emergentagent\.com",
     r"http://localhost(:\d+)?",
     r"http://127\.0\.0\.1(:\d+)?",
 ]
 if _frontend_host:
     _origin_regex_parts.append(_frontend_host)
+for _origin in [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip() and o.strip() != "*"]:
+    _origin_regex_parts.append(re.escape(_origin.rstrip("/")))
 CORS_ORIGIN_REGEX = r"^(" + "|".join(_origin_regex_parts) + r")$"
 
 app.add_middleware(
@@ -3640,8 +3647,7 @@ app.add_middleware(
 # --- Security headers middleware ---
 CSP_POLICY = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://assets.emergent.sh "
-    "https://*.i.posthog.com https://us.i.posthog.com; "
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.i.posthog.com https://us.i.posthog.com; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "img-src 'self' data: blob: https:; "
     "font-src 'self' https://fonts.gstatic.com data:; "

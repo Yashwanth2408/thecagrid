@@ -17,7 +17,7 @@ Trigger idempotent seed manually if needed:
 curl -X POST "$REACT_APP_BACKEND_URL/api/seed"
 ```
 
-## Google OAuth (Emergent) — Test setup without real Google flow
+## Google OAuth — Test setup without real Google flow
 Because real Google auth requires a live browser, testing agents should seed a mongo user + session directly and then either:
 - attach cookie in Playwright, OR
 - use `Authorization: Bearer <token>` for API tests.
@@ -76,7 +76,7 @@ curl -sX GET "$API/api/auth/me" -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Google OAuth session exchange (mocked at test level)
-The endpoint hits `https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data`. Do NOT call it in unit tests. Instead, prove flow works by seeding user_sessions directly and hitting `/api/auth/me`.
+The OAuth session exchange endpoint is environment-configured. Do NOT call a live provider in unit tests. Instead, prove flow works by seeding `user_sessions` directly and hitting `/api/auth/me`.
 
 ### Logout
 ```
@@ -110,7 +110,7 @@ await page.goto("https://your-app.com/dashboard")
 - [ ] `/api/auth/me` returns 401 when unauthenticated (not 403)
 - [ ] `/api/auth/me` returns user with `user_id` (no `_id`)
 - [ ] Session token cookie is httpOnly, secure, samesite=none
-- [ ] Emergent redirect uses `window.location.origin` dynamically (no hardcoding)
+- [ ] OAuth redirect uses `window.location.origin` dynamically (no hardcoding)
 - [ ] AppRouter processes `#session_id=...` synchronously before ProtectedRoute check
 - [ ] AuthProvider skips `/api/auth/me` when `window.location.hash` contains `session_id=`
 

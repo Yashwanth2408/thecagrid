@@ -74,10 +74,14 @@ export default function AuthShell({ title, eyebrow, children, footer, testId = "
 }
 
 export function GoogleLink({ label = "continue with google →" }) {
+  if (!process.env.REACT_APP_GOOGLE_AUTH_URL) return null;
+
   const onGoogle = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+    const authUrl = process.env.REACT_APP_GOOGLE_AUTH_URL || "";
+    if (!authUrl) return;
     const redirectUrl = window.location.origin + "/dashboard";
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+    const separator = authUrl.includes("?") ? "&" : "?";
+    window.location.href = `${authUrl}${separator}redirect=${encodeURIComponent(redirectUrl)}`;
   };
   return (
     <button

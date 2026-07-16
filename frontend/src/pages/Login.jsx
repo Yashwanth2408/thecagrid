@@ -11,6 +11,7 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
   const { setUser } = useAuth();
   const navigate = useNavigate();
+  const googleEnabled = Boolean(process.env.REACT_APP_GOOGLE_AUTH_URL);
 
   const onSubmit = async (e) => {
     e.preventDefault();
@@ -78,10 +79,12 @@ export default function Login() {
           demo · demo@cagrid.in / demo123
         </div>
       </form>
+      {googleEnabled && (
       <div className="mt-12 pt-8 border-t border-white/[0.06]">
         <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#5A5A62] mb-4">or</div>
         <GoogleLink label="log in with google →" />
       </div>
+      )}
     </AuthShell>
   );
 }

@@ -143,13 +143,13 @@ export default function Privacy() {
               </thead>
               <tbody>
                 <VendorRow
-                  name="Emergent Auth"
+                  name="Google OAuth"
                   purpose="Google OAuth sign-in proxy"
                   dataFlow="email · name · Google profile picture URL"
                 />
                 <VendorRow
-                  name="Anthropic Claude (via Emergent LLM Key)"
-                  purpose="AI mentor answers and study-plan generation (Claude Sonnet 4.5)"
+                  name="Groq"
+                  purpose="AI mentor answers and study-plan generation (Groq-hosted LLM)"
                   dataFlow="your prompt · anonymised study context · no PII beyond level and goals"
                 />
                 <VendorRow

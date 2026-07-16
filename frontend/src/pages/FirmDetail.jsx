@@ -5,6 +5,7 @@ import AppShell from "@/components/AppShell";
 import GridBackground from "@/components/GridBackground";
 import { api } from "@/lib/apiClient";
 import { toast } from "sonner";
+import { useAuth } from "@/context/AuthContext";
 
 const FACET_LABELS = {
   overall: "OVERALL", wlb: "WLB", learning: "LEARNING",
@@ -93,6 +94,114 @@ function ReviewForm({ slug, onSubmit }) {
         data-testid="review-submit-btn"
         className="mt-6 px-6 py-2.5 font-mono uppercase tracking-[0.22em] text-[11px] border border-[#B4FF39] text-[#B4FF39] hover:bg-[#B4FF39] hover:text-black transition disabled:opacity-50"
       >{submitting ? "[ SUBMITTING… ]" : "[ SUBMIT REVIEW → ]"}</button>
+    </div>
+  );
+}
+
+// ─── Recruit via The CA Grid ─────────────────────────────────────────────────
+function RecruitSection({ slug }) {
+  const { user } = useAuth();
+  const [firmJobs, setFirmJobs] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [form, setForm] = useState({
+    title: "", location: "", type: "full_time",
+    experience_min: 0, experience_max: 3,
+    salary_min: 500000, salary_max: 1200000,
+    domain: [], description_markdown: "",
+    use_platform_apply: true,
+  });
+
+  useEffect(() => {
+    api.get(`/firms/${slug}/jobs`).then((r) => setFirmJobs(r.data.items || [])).catch(() => {});
+  }, [slug]);
+
+  if (!user?.is_verified_ca) return null;
+
+  const postJob = async () => {
+    if (!form.title || !form.location || !form.description_markdown) {
+      return toast.error("Title, location, and description are required");
+    }
+    setSubmitting(true);
+    try {
+      const r = await api.post(`/firms/${slug}/jobs/sponsor`, form);
+      toast.success(`Sponsored listing created — ${r.data.job_id}`);
+      setFirmJobs((p) => [r.data.job, ...p]);
+      setShowForm(false);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not create listing");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="mt-16 border border-[#B4FF39]/20 bg-[#B4FF39]/[0.03] p-6 md:p-8" data-testid="firm-recruit-section">
+      <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#B4FF39] mb-3">[ RECRUIT VIA THE CA GRID ]</div>
+      <h3 className="font-display italic text-[28px] md:text-[36px] leading-tight text-white mb-2">Hire from 14,000+ CA aspirants.</h3>
+      <p className="font-body text-[14px] text-[#8B8B92] mb-6 max-w-[600px]">
+        Post sponsored job listings that appear at the top of the Jobs board with a SPONSORED badge.
+        Use platform-native applications to capture CA-verified leads directly.
+        <span className="text-[#B4FF39] ml-2">₹2,999/listing/month</span> — Razorpay integration coming soon.
+      </p>
+
+      {firmJobs.filter((j) => j.is_sponsored).length > 0 && (
+        <div className="mb-6">
+          <div className="font-mono uppercase tracking-[0.22em] text-[10px] text-[#5A5A62] mb-3">ACTIVE SPONSORED LISTINGS</div>
+          <div className="space-y-2">
+            {firmJobs.filter((j) => j.is_sponsored).map((j) => (
+              <div key={j.job_id} className="flex items-center justify-between border border-[#B4FF39]/20 px-4 py-3">
+                <div>
+                  <div className="font-mono uppercase tracking-[0.18em] text-[11px] text-white">{j.title}</div>
+                  <div className="font-mono uppercase tracking-[0.18em] text-[9.5px] text-[#5A5A62]">{j.location} · {j.application_count || 0} APPLICATIONS</div>
+                </div>
+                <span className="font-mono uppercase tracking-[0.18em] text-[9px] text-[#B4FF39] border border-[#B4FF39]/30 px-2 py-0.5">LIVE</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!showForm ? (
+        <button onClick={() => setShowForm(true)} className="font-mono uppercase tracking-[0.22em] text-[10.5px] px-4 py-2 border border-[#B4FF39] text-[#B4FF39] hover:bg-[#B4FF39] hover:text-black transition">
+          [ + POST SPONSORED LISTING ]
+        </button>
+      ) : (
+        <div className="border border-white/[0.06] p-6 mt-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+              <div className="font-mono uppercase tracking-[0.18em] text-[10px] text-[#8B8B92] mb-1">JOB TITLE *</div>
+              <input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="Audit Associate - CA Inter" className="w-full bg-transparent border border-white/[0.08] px-3 py-2 font-mono text-[12px] text-white focus:border-[#B4FF39] outline-none" />
+            </div>
+            <div>
+              <div className="font-mono uppercase tracking-[0.18em] text-[10px] text-[#8B8B92] mb-1">LOCATION *</div>
+              <input value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} placeholder="Mumbai" className="w-full bg-transparent border border-white/[0.08] px-3 py-2 font-mono text-[12px] text-white focus:border-[#B4FF39] outline-none" />
+            </div>
+            <div>
+              <div className="font-mono uppercase tracking-[0.18em] text-[10px] text-[#8B8B92] mb-1">EXP MIN (YRS)</div>
+              <input type="number" min={0} value={form.experience_min} onChange={(e) => setForm((f) => ({ ...f, experience_min: Number(e.target.value) }))} className="w-full bg-transparent border border-white/[0.08] px-3 py-2 font-mono text-[12px] text-white focus:border-[#B4FF39] outline-none" />
+            </div>
+            <div>
+              <div className="font-mono uppercase tracking-[0.18em] text-[10px] text-[#8B8B92] mb-1">EXP MAX (YRS)</div>
+              <input type="number" min={0} value={form.experience_max} onChange={(e) => setForm((f) => ({ ...f, experience_max: Number(e.target.value) }))} className="w-full bg-transparent border border-white/[0.08] px-3 py-2 font-mono text-[12px] text-white focus:border-[#B4FF39] outline-none" />
+            </div>
+          </div>
+          <div className="mb-4">
+            <div className="font-mono uppercase tracking-[0.18em] text-[10px] text-[#8B8B92] mb-1">DESCRIPTION *</div>
+            <textarea value={form.description_markdown} onChange={(e) => setForm((f) => ({ ...f, description_markdown: e.target.value }))} rows={5} placeholder="Describe the role, responsibilities, and what you're looking for in a CA candidate..." className="w-full bg-transparent border border-white/[0.08] px-3 py-2 font-body text-[13px] text-white focus:border-[#B4FF39] outline-none resize-none" />
+          </div>
+          <div className="flex items-center gap-2 mb-4">
+            <input type="checkbox" id="platform-apply" checked={form.use_platform_apply} onChange={(e) => setForm((f) => ({ ...f, use_platform_apply: e.target.checked }))} className="accent-[#B4FF39]" />
+            <label htmlFor="platform-apply" className="font-mono uppercase tracking-[0.18em] text-[10px] text-[#8B8B92]">USE PLATFORM APPLY (CAPTURE LEADS IN-APP)</label>
+          </div>
+          <div className="flex gap-3">
+            <button onClick={postJob} disabled={submitting} className="font-mono uppercase tracking-[0.22em] text-[10.5px] px-4 py-2 border border-[#B4FF39] text-[#B4FF39] hover:bg-[#B4FF39] hover:text-black transition disabled:opacity-50">
+              {submitting ? "[ POSTING… ]" : "[ POST LISTING ]"}
+            </button>
+            <button onClick={() => setShowForm(false)} className="font-mono uppercase tracking-[0.22em] text-[10.5px] px-4 py-2 border border-white/[0.1] text-white/60 hover:text-white transition">[ CANCEL ]</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -201,6 +310,7 @@ export default function FirmDetail() {
         </div>
 
         <ReviewForm slug={firm.slug} onSubmit={load} />
+        <RecruitSection slug={firm.slug} />
       </div>
     </AppShell>
   );

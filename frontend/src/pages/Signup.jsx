@@ -14,6 +14,7 @@ export default function Signup() {
   const [refInfo, setRefInfo] = useState(null);
   const { setUser } = useAuth();
   const navigate = useNavigate();
+  const googleEnabled = Boolean(process.env.REACT_APP_GOOGLE_AUTH_URL);
 
   // Phase 7 — pick up ?ref= from URL or localStorage
   useEffect(() => {
@@ -96,10 +97,12 @@ export default function Signup() {
           </SubmitLink>
         </div>
       </form>
+      {googleEnabled && (
       <div className="mt-12 pt-8 border-t border-white/[0.06]">
         <div className="font-mono uppercase tracking-[0.22em] text-[10.5px] text-[#5A5A62] mb-4">or</div>
         <GoogleLink />
       </div>
+      )}
     </AuthShell>
   );
 }

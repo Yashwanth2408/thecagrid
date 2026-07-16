@@ -1,6 +1,6 @@
 """Phase 7 — Referral / Invite loop.
 
-Every user gets a unique referral code. Inviting via email logs stdout,
+Every user gets a unique referral code. Inviting via email uses SendGrid,
 signing up with ?ref= attributes referrer. Onboarding-complete awards XP +
 badges. Leaderboard.
 """
@@ -12,11 +12,16 @@ import uuid
 import hashlib
 import re
 import logging
+import os
 
 logger = logging.getLogger("referral")
 router = APIRouter(prefix="/api")
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[a-zA-Z]{2,}$")
+
+SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "")
+SENDGRID_FROM_EMAIL = os.environ.get("SENDGRID_FROM_EMAIL", "noreply@cagrid.in")
+SENDGRID_FROM_NAME = os.environ.get("SENDGRID_FROM_NAME", "The CA Grid")
 
 
 def _now():
@@ -121,7 +126,45 @@ async def invite(body: InviteBody, request: Request):
         }
         await db.referral_events.insert_one(doc)
         link = f"{origin}/signup?ref={code}"
-        logger.info(f"[EMAIL] to={em} subject=\"{referrer_name} invited you to The CA Grid\" body=\"Join The CA Grid — India's premium prep platform. Get +100 XP welcome bonus when you sign up via {link}\"")
+
+        # Send actual email via SendGrid
+        if SENDGRID_API_KEY:
+            try:
+                import sendgrid
+                from sendgrid.helpers.mail import Mail, Email, To, Content
+
+                sg = sendgrid.SendGridAPIClient(api_key=SENDGRID_API_KEY)
+                mail = Mail(
+                    from_email=Email(SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME),
+                    to_emails=To(em),
+                    subject=f"{referrer_name} invited you to The CA Grid",
+                    plain_text_content=Content("text/plain", f"Join The CA Grid — India's premium prep platform. Get +100 XP welcome bonus when you sign up via {link}"),
+                    html_content=Content("text/html", f"""
+                        <div style="font-family: 'Space Grotesk', system-ui, sans-serif; max-width: 600px; margin: 0 auto; background: #0A0A0C; color: #F2F2F2; padding: 32px; border-radius: 16px; border: 1px solid rgba(139,92,246,0.2);">
+                            <div style="text-align: center; margin-bottom: 24px;">
+                                <div style="display: inline-flex; align-items: center; gap: 8px; background: linear-gradient(135deg, #8B5CF6, #A855F7); padding: 8px 16px; border-radius: 999px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em;">
+                                    <span>🎓</span> The CA Grid
+                                </div>
+                            </div>
+                            <h1 style="font-family: 'Instrument Serif', serif; font-style: italic; font-size: 28px; line-height: 1.2; color: #F2F2F2; margin: 0 0 16px;">You've been invited</h1>
+                            <p style="font-size: 15px; line-height: 1.6; color: #8B8B92; margin: 0 0 24px;">{referrer_name} thinks you'd love The CA Grid — a premium dark-mode-first productivity platform for Indian CA aspirants. Focus timer, streaks, AI mentor citing Ind AS at 2am, and analytics.</p>
+                            <div style="text-align: center; margin: 32px 0;">
+                                <a href="{link}" style="display: inline-block; background: linear-gradient(135deg, #8B5CF6, #A855F7); color: white; padding: 14px 28px; border-radius: 8px; font-weight: 600; text-decoration: none; font-size: 14px;">Claim +100 XP & Join →</a>
+                            </div>
+                            <p style="font-size: 11px; color: #5A5A62; text-align: center; margin-top: 24px;">This link expires in 30 days. If you didn't expect this, you can safely ignore this email.</p>
+                        </div>
+                    """),
+                )
+                response = sg.send(mail)
+                logger.info(f"[EMAIL] SendGrid status={response.status_code} to={em}")
+            except Exception as e:
+                logger.error(f"[EMAIL] SendGrid failed: {e}")
+                # Fallback to stdout logging
+                logger.info(f"[EMAIL] to={em} subject=\"{referrer_name} invited you to The CA Grid\" body=\"Join The CA Grid — India's premium prep platform. Get +100 XP welcome bonus when you sign up via {link}\"")
+        else:
+            # No SendGrid configured - fallback to stdout logging
+            logger.info(f"[EMAIL] to={em} subject=\"{referrer_name} invited you to The CA Grid\" body=\"Join The CA Grid — India's premium prep platform. Get +100 XP welcome bonus when you sign up via {link}\"")
+
         doc.pop("_id", None)
         sent_docs.append(doc)
     log_event("referral.invited", user_id=user["user_id"], count=len(sent_docs))
